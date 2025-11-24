@@ -1,6 +1,7 @@
 streamlit
 pandas
-gspread
-gspread-dataframe
+fpdf2
+requests
 plotly
-fpdf
+gspread
+google-auth
