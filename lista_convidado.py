@@ -17,7 +17,7 @@ except ImportError:
 # --- CONFIGURAÇÕES GERAIS ---
 LOGO_URL = "https://lanbele.com.br/wp-content/uploads/2025/09/IMG-20250920-WA0029-1024x585.png"
 LOGO_PATH = "logo_cache.png"
-SENHA_ADMIN = "1234"
+SENHA_ADMIN = "140206"
 SHEET_NAME = "Controle_Buffet" 
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -262,7 +262,7 @@ def add_guest():
     
     if guest_type == "Criança":
         display_age = f"{int(age)} anos"
-        # --- ATUALIZAÇÃO: AGORA 8 ANOS PAGA. SÓ <= 7 É ISENTO ---
+        # --- REGRA ATUALIZADA: SÓ É ISENTO ATÉ 7 ANOS ---
         if age <= 7: 
             is_paying = False
             status_label = "Isento"
@@ -353,6 +353,23 @@ with st.sidebar:
         else: st.info("Lista vazia.")
     
     st.divider()
+    
+    # --- EXPORTAÇÃO NA LATERAL (PÚBLICA) ---
+    st.subheader("📂 Exportar Dados")
+    if not df.empty:
+        cols_to_drop = ['_is_paying', 'id', 'ID']
+        export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
+        
+        pdf_bytes = generate_pdf_report_v6(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
+        
+        st.download_button("📄 Baixar Relatório PDF", data=pdf_bytes, file_name="lista_final.pdf", mime="application/pdf", use_container_width=True)
+        
+        msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
+        st.link_button("📱 Enviar Resumo no Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
+    else:
+        st.info("Nenhum dado para exportar.")
+
+    st.divider()
     if st.button("🗑️ NOVA FESTA (Zerar Local)"): 
         st.session_state.guests = []
         st.rerun()
@@ -371,7 +388,6 @@ st.progress(percent_full)
 if total_guests >= guest_limit: 
     st.error("⚠️ LIMITE DO CONTRATO ATINGIDO! (Entrada Liberada)")
 
-# Placar Sempre Visível
 col1, col2, col3 = st.columns(3)
 with col1: st.markdown(f"""<div class="metric-card card-purple"><div class="label">Pagantes</div><div class="big-number">{total_paying}</div></div>""", unsafe_allow_html=True)
 with col2: st.markdown(f"""<div class="metric-card card-green"><div class="label">Isentos (≤7)</div><div class="big-number">{total_free}</div><div style="font-size:0.7em">Crianças</div></div>""", unsafe_allow_html=True)
@@ -380,9 +396,9 @@ with col3: st.markdown(f"""<div class="metric-card card-orange"><div class="labe
 st.write("") 
 
 # --- ABAS PRINCIPAIS ---
-tab_entry, tab_reports = st.tabs(["📍 Registrar Entrada", "📊 Relatórios & Gráficos"])
+tab_entry, tab_reports = st.tabs(["📍 Registrar Entrada", "📊 Relatórios & Gráficos (🔒)"])
 
-# --- ABA 1: REGISTRO ---
+# --- ABA 1: REGISTRO (PÚBLICO) ---
 with tab_entry:
     with st.container(border=True):
         st.subheader("Adicionar Convidado")
@@ -413,66 +429,45 @@ with tab_entry:
             if show_undo:
                 st.button("↩️ Desfazer", on_click=remove_last_guest, help="Remove o último convidado")
 
-# --- ABA 2: RELATÓRIOS ---
+# --- ABA 2: RELATÓRIOS (PROTEGIDO) ---
 with tab_reports:
-    if not df.empty:
-        st.subheader("📈 Fluxo de Chegada (Intervalos de 15 min)")
-        
-        if 'Hora' in df.columns:
-            # Cria uma cópia para manipulação
-            chart_df = df.copy()
+    st.write("### 🔒 Área Restrita")
+    senha = st.text_input("Digite a senha de administrador para visualizar os gráficos:", type="password", key="report_pwd")
+    
+    if senha == SENHA_ADMIN:
+        if not df.empty:
+            st.success("Acesso Liberado")
+            st.subheader("📈 Fluxo de Chegada (Intervalos de 15 min)")
             
-            # Converte string HH:MM para objeto datetime (usando data fictícia de hoje)
-            chart_df['datetime'] = pd.to_datetime(chart_df['Hora'], format='%H:%M').apply(
-                lambda x: x.replace(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
-            )
-            
-            # Arredonda para baixo (floor) a cada 15 min ('15T')
-            chart_df['Intervalo'] = chart_df['datetime'].dt.floor('15T')
-            
-            # Conta quantos chegaram em cada intervalo
-            interval_counts = chart_df['Intervalo'].value_counts().sort_index().reset_index()
-            interval_counts.columns = ['Horário', 'Chegadas']
-            
-            # Formata de volta para HH:MM para ficar bonito no gráfico
-            interval_counts['Horário'] = interval_counts['Horário'].dt.strftime('%H:%M')
-            
-            # Gráfico de Barras Melhorado
-            fig_time = px.bar(
-                interval_counts, 
-                x="Horário", 
-                y="Chegadas", 
-                text="Chegadas",
-                color_discrete_sequence=['#fb8c00']
-            )
-            fig_time.update_layout(
-                margin=dict(t=10,b=10,l=10,r=10), 
-                height=300, 
-                paper_bgcolor='rgba(0,0,0,0)', 
-                plot_bgcolor='rgba(255,255,255,0.1)', 
-                font_color="white",
-                xaxis_title="Horário (Blocos de 15min)",
-                yaxis_title="Pessoas"
-            )
-            st.plotly_chart(fig_time, use_container_width=True)
+            if 'Hora' in df.columns:
+                # Lógica de Agrupamento de 15 min
+                chart_df = df.copy()
+                chart_df['datetime'] = pd.to_datetime(chart_df['Hora'], format='%H:%M').apply(
+                    lambda x: x.replace(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
+                )
+                chart_df['Intervalo'] = chart_df['datetime'].dt.floor('15T')
+                interval_counts = chart_df['Intervalo'].value_counts().sort_index().reset_index()
+                interval_counts.columns = ['Horário', 'Chegadas']
+                interval_counts['Horário'] = interval_counts['Horário'].dt.strftime('%H:%M')
+                
+                fig_time = px.bar(interval_counts, x="Horário", y="Chegadas", text="Chegadas", color_discrete_sequence=['#fb8c00'])
+                fig_time.update_layout(
+                    margin=dict(t=10,b=10,l=10,r=10), 
+                    height=300, 
+                    paper_bgcolor='rgba(0,0,0,0)', 
+                    plot_bgcolor='rgba(255,255,255,0.1)', 
+                    font_color="white",
+                    xaxis_title="Horário (Blocos de 15min)",
+                    yaxis_title="Pessoas"
+                )
+                st.plotly_chart(fig_time, use_container_width=True)
 
-        col_down, col_table = st.columns([1, 2])
-        
-        with col_down:
-            st.write("#### Exportar")
-            cols_to_drop = ['_is_paying', 'id', 'ID']
-            export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
-            
-            pdf_bytes = generate_pdf_report_v6(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
-            
-            st.download_button("📄 Baixar Relatório PDF", data=pdf_bytes, file_name="lista_final.pdf", mime="application/pdf", use_container_width=True)
-            
-            msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
-            st.link_button("📱 Enviar Resumo no Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
-
-        with col_table:
             st.write("#### Lista Completa")
-            st.dataframe(export_df, use_container_width=True, hide_index=True, height=300)
-            
-    else:
-        st.info("Nenhum dado para exibir nos relatórios ainda.")
+            cols_to_drop = ['_is_paying', 'id', 'ID']
+            display_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
+            st.dataframe(display_df, use_container_width=True, hide_index=True, height=300)
+                
+        else:
+            st.info("Nenhum dado para exibir nos relatórios ainda.")
+    elif senha:
+        st.error("Senha Incorreta!")
