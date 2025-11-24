@@ -59,6 +59,7 @@ def get_active_parties_today():
         for row in data:
             row_date = str(row.get('Data', ''))
             row_event = str(row.get('Evento', '')).strip()
+            # Pega qualquer evento de hoje, inclusive os com marcador de sistema
             if row_date == today_str and row_event:
                 active_events.add(row_event)
         return list(active_events)
@@ -66,7 +67,7 @@ def get_active_parties_today():
         return []
 
 def load_data_from_sheets(target_event_name):
-    """Carrega dados APENAS do evento ativo"""
+    """Carrega dados APENAS do evento ativo (Filtrando o Sistema)"""
     sheet = get_db_connection()
     if sheet:
         try:
@@ -78,7 +79,12 @@ def load_data_from_sheets(target_event_name):
                 row_event = str(row.get('Evento', '')).strip().lower()
                 target_event = str(target_event_name).strip().lower()
                 row_date = str(row.get('Data', ''))
+                row_status = str(row.get('Status', ''))
                 
+                # Pula linhas de sistema (marcador de inicio)
+                if row_status == "SYSTEM_START":
+                    continue
+
                 if row_event == target_event and row_date == today_str:
                     raw_id = row.get('id') or row.get('ID') or ''
                     safe_id = str(raw_id)
@@ -143,7 +149,7 @@ def download_logo():
         except: pass
 
 @st.cache_data(show_spinner=False)
-def generate_pdf_report_v9(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+def generate_pdf_report_v10(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     if os.path.exists(LOGO_PATH):
@@ -263,11 +269,27 @@ def join_existing_party():
 
 def start_party():
     if st.session_state.input_party_name:
-        st.session_state.party_name = st.session_state.input_party_name
+        party_name = st.session_state.input_party_name
+        st.session_state.party_name = party_name
         st.session_state.guest_limit = st.session_state.input_guest_limit
         st.session_state.party_active = True
+        
         if HAS_GSHEETS:
-            db_data = load_data_from_sheets(st.session_state.party_name)
+            # --- SOLUÇÃO DO PROBLEMA ---
+            # Cria um "Marco" na planilha para o celular conseguir ver a festa imediatamente
+            system_marker = {
+                "id": "SYSTEM", 
+                "Nome": "-- INÍCIO DA FESTA --", 
+                "Tipo": "System",
+                "Idade": "-", 
+                "Status": "SYSTEM_START",
+                "Hora": datetime.now().strftime("%H:%M"), 
+                "Data": datetime.now().strftime("%d/%m/%Y")
+            }
+            save_guest_to_sheets(system_marker, party_name)
+            
+            # Carrega dados (pode ser que recupere algo se já existia)
+            db_data = load_data_from_sheets(party_name)
             if db_data: st.session_state.guests = db_data
     else:
         st.warning("Digite o nome da festa!")
@@ -293,7 +315,6 @@ def add_guest():
         return
 
     # --- TRAVA DE SEGURANÇA ANTI-DUPLICAÇÃO ---
-    # Se o último convidado adicionado tiver o MESMO nome e foi adicionado há menos de 5s, bloqueia.
     if st.session_state.guests and st.session_state.last_action_time:
         last_guest = st.session_state.guests[0]
         seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
@@ -301,7 +322,6 @@ def add_guest():
             st.warning(f"⚠️ {name} já foi adicionado agora! (Duplicidade evitada)")
             st.session_state.temp_name = "" # Limpa o campo mesmo assim
             return
-    # ------------------------------------------
 
     is_paying = True
     display_age = "-"
@@ -379,14 +399,25 @@ with st.sidebar:
         
         if is_connected:
             st.success("🟢 Online")
+            
+            # --- ÁREA DE SINCRONIA: Procura festas ativas ---
+            st.markdown("### 📡 Festas Rolando Agora")
+            if st.button("🔄 Procurar Festas"):
+                # Apenas recarrega para buscar festas
+                st.rerun()
+                
             active_events_today = get_active_parties_today()
+            
             if active_events_today:
-                st.info(f"📅 Encontrei {len(active_events_today)} festa(s) hoje!")
-                st.selectbox("Continuar festa existente:", options=active_events_today, key="selected_active_party")
-                if st.button("👉 ENTRAR NA FESTA", type="primary"):
+                st.success(f"Encontrei: {', '.join(active_events_today)}")
+                st.selectbox("Selecione para entrar:", options=active_events_today, key="selected_active_party")
+                if st.button("👉 ENTRAR NESTA FESTA", type="primary"):
                     join_existing_party()
-                st.markdown("---")
-                st.write("Ou inicie uma nova:")
+            else:
+                st.info("Nenhuma festa iniciada hoje na planilha.")
+                
+            st.markdown("---")
+            st.write("Ou comece do zero:")
         else:
             st.warning("🟡 Offline")
         
@@ -425,7 +456,7 @@ with st.sidebar:
         if not df.empty:
             cols_to_drop = ['_is_paying', 'id', 'ID']
             export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
-            pdf_bytes = generate_pdf_report_v9(st.session_state.party_name, export_df, total_paying, total_free, total_cortesia, total_guests, st.session_state.guest_limit)
+            pdf_bytes = generate_pdf_report_v10(st.session_state.party_name, export_df, total_paying, total_free, total_cortesia, total_guests, st.session_state.guest_limit)
             
             st.download_button("1️⃣ Baixar Relatório", data=pdf_bytes, file_name=f"Relatorio_{st.session_state.party_name}.pdf", mime="application/pdf", use_container_width=True)
             
