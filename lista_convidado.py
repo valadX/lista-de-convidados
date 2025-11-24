@@ -57,12 +57,8 @@ def load_data_from_sheets():
             
             for row in data:
                 # --- LIMPEZA CRÍTICA PARA EVITAR OVERFLOW ---
-                # Cria um novo dicionário LIMPO apenas com o que precisamos
-                # Se o ID vier do Sheets como número gigante, convertemos para string aqui
-                
-                # 1. Tenta achar o ID em qualquer formato (ID ou id)
                 raw_id = row.get('id') or row.get('ID') or ''
-                safe_id = str(raw_id) # Converte para texto imediatamente
+                safe_id = str(raw_id)
                 
                 clean_row = {
                     'id': safe_id,
@@ -73,9 +69,7 @@ def load_data_from_sheets():
                     'Hora': row.get('Hora', '--:--')
                 }
                 
-                # 2. Recalcula status pagante
                 clean_row['_is_paying'] = True if clean_row['Status'] == 'Pagante' else False
-                
                 cleaned_data.append(clean_row)
                 
             return cleaned_data[::-1]
@@ -88,7 +82,6 @@ def save_guest_to_sheets(guest_dict):
     sheet = get_db_connection()
     if sheet:
         try:
-            # Força conversão para string antes de enviar para evitar que o Sheets ache que é número
             row = [
                 str(guest_dict['id']),
                 guest_dict['Nome'],
@@ -132,7 +125,7 @@ def download_logo():
     return True
 
 @st.cache_data(show_spinner=False)
-def generate_pdf_report_v5(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+def generate_pdf_report_v6(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     
@@ -158,7 +151,7 @@ def generate_pdf_report_v5(party_name, guests_df, total_paying, total_free, tota
     pdf.cell(0, 8, f"Total Geral Presente: {total_guests}", ln=True)
     pdf.ln(2)
     pdf.cell(0, 8, f"Total Pagantes (Contrato): {total_paying}", ln=True)
-    pdf.cell(0, 8, f"Crianças Isentas (< 7 anos): {total_free}", ln=True)
+    pdf.cell(0, 8, f"Crianças Isentas (<= 7 anos): {total_free}", ln=True)
     pdf.cell(0, 8, f"Cortesias (Família/Staff): {total_cortesia}", ln=True)
     
     pdf.ln(10)
@@ -225,6 +218,13 @@ st.markdown("""
     .label { font-size: 0.9em; font-weight: 500; text-transform: uppercase; opacity: 0.9; }
     div.stButton > button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; border: none; }
     section[data-testid="stSidebar"] { background-color: #1a0024; border-right: 1px solid #4a148c; }
+    /* Abas */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px; white-space: pre-wrap; background-color: rgba(255,255,255,0.1);
+        border-radius: 8px 8px 0px 0px; color: white; padding: 10px 20px;
+    }
+    .stTabs [aria-selected="true"] { background-color: #6a1b9a; color: white; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -262,14 +262,14 @@ def add_guest():
     
     if guest_type == "Criança":
         display_age = f"{int(age)} anos"
-        if age <= 8: 
+        # --- ATUALIZAÇÃO: AGORA 8 ANOS PAGA. SÓ <= 7 É ISENTO ---
+        if age <= 7: 
             is_paying = False
             status_label = "Isento"
     elif guest_type == "Cortesia":
         is_paying = False
         status_label = "Cortesia"
 
-    # ID como String para evitar Overflow
     unique_id = str(datetime.now().strftime("%Y%m%d%H%M%S%f"))
     
     new_guest = {
@@ -298,11 +298,10 @@ def remove_guest_by_id(guest_id):
     if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
         delete_guest_from_sheets(guest_id)
 
-# --- CÁLCULOS E CORREÇÃO DO OVERFLOW ---
+# --- CÁLCULOS ---
 df = pd.DataFrame(st.session_state.guests)
 
 if not df.empty:
-    # GARANTIA FINAL: Converte TUDO que parecer ID para string antes de exibir
     if 'id' in df.columns: df['id'] = df['id'].astype(str)
     if 'ID' in df.columns: df['ID'] = df['ID'].astype(str)
     
@@ -319,14 +318,13 @@ else:
 # ==========================================
 
 with st.sidebar:
-    st.header("⚙️ Configurações & Lista")
+    st.header("⚙️ Configurações")
     
     is_connected = HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets)
     if is_connected:
-        st.success("🟢 Online (Sincronizado)")
+        st.success("🟢 Online")
     else:
-        st.warning("🟡 Offline (Local)")
-        st.caption("Configure os 'Secrets' no painel.")
+        st.warning("🟡 Offline")
 
     with st.expander("📝 Dados do Evento", expanded=True):
         party_name = st.text_input("Nome do Evento", value="Aniversário")
@@ -334,14 +332,13 @@ with st.sidebar:
     
     st.divider()
 
-    with st.expander("🗑️ Excluir Convidado (Senha)"):
+    with st.expander("🗑️ Excluir (Senha)"):
         if not df.empty:
             st.warning("Requer Senha")
             guest_options = {}
             for g in st.session_state.guests:
                 g_nome = g.get('Nome', 'Sem Nome')
                 g_hora = g.get('Hora', '--:--')
-                # Garante ID string aqui também
                 g_id = str(g.get('id', ''))
                 guest_options[f"{g_nome} ({g_hora})"] = g_id
             
@@ -356,30 +353,6 @@ with st.sidebar:
         else: st.info("Lista vazia.")
     
     st.divider()
-
-    st.subheader("📂 Relatórios")
-    if not df.empty:
-        st.write("**📈 Chegadas por Horário:**")
-        if 'Hora' in df.columns:
-            time_data = df.copy(); time_data['Contagem'] = 1; time_data = time_data.sort_values('Hora')
-            fig_time = px.histogram(time_data, x="Hora", title=None, color_discrete_sequence=['#fb8c00'])
-            fig_time.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=150, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(255,255,255,0.1)', font_color="white")
-            st.plotly_chart(fig_time, use_container_width=True)
-
-        # Remove colunas internas e qualquer coluna que pareça ID para exibição
-        cols_to_drop = ['_is_paying', 'id', 'ID']
-        export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
-        
-        pdf_bytes = generate_pdf_report_v5(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
-        
-        st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="lista.pdf", mime="application/pdf")
-        msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
-        st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}")
-        
-        st.write("---")
-        st.dataframe(export_df, use_container_width=True, hide_index=True, height=200)
-    else: st.info("Lista vazia.")
-    
     if st.button("🗑️ NOVA FESTA (Zerar Local)"): 
         st.session_state.guests = []
         st.rerun()
@@ -398,38 +371,108 @@ st.progress(percent_full)
 if total_guests >= guest_limit: 
     st.error("⚠️ LIMITE DO CONTRATO ATINGIDO! (Entrada Liberada)")
 
+# Placar Sempre Visível
 col1, col2, col3 = st.columns(3)
 with col1: st.markdown(f"""<div class="metric-card card-purple"><div class="label">Pagantes</div><div class="big-number">{total_paying}</div></div>""", unsafe_allow_html=True)
-with col2: st.markdown(f"""<div class="metric-card card-green"><div class="label">Isentos</div><div class="big-number">{total_free}</div><div style="font-size:0.7em">Crianças</div></div>""", unsafe_allow_html=True)
+with col2: st.markdown(f"""<div class="metric-card card-green"><div class="label">Isentos (≤7)</div><div class="big-number">{total_free}</div><div style="font-size:0.7em">Crianças</div></div>""", unsafe_allow_html=True)
 with col3: st.markdown(f"""<div class="metric-card card-orange"><div class="label">Cortesias</div><div class="big-number">{total_cortesia}</div><div style="font-size:0.7em">Família</div></div>""", unsafe_allow_html=True)
 
 st.write("") 
 
-with st.container(border=True):
-    st.subheader("📍 Registrar Entrada")
-    
-    st.text_input("Nome do Convidado", placeholder="Digite o nome...", key="temp_name")
-    
-    c_type, c_age = st.columns([2, 1])
-    with c_type: 
-        guest_type = st.radio("Tipo", ["Adulto", "Criança", "Cortesia"], horizontal=True, key="temp_type")
-    
-    with c_age: 
-        if guest_type == "Criança":
-            st.number_input("Idade", min_value=0, max_value=18, step=1, key="temp_age", on_change=add_guest)
-        else:
-            st.empty()
+# --- ABAS PRINCIPAIS ---
+tab_entry, tab_reports = st.tabs(["📍 Registrar Entrada", "📊 Relatórios & Gráficos"])
 
-    st.write("")
-    
-    b1, b2 = st.columns([3, 1])
-    with b1:
-        st.button("➕ CONFIRMAR ENTRADA", type="primary", on_click=add_guest)
-    with b2:
-        show_undo = False
-        if st.session_state.guests and st.session_state.last_action_time:
-            seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
-            if seconds_passed <= 15:
-                show_undo = True
-        if show_undo:
-            st.button("↩️ Desfazer", on_click=remove_last_guest, help="Remove o último convidado")
+# --- ABA 1: REGISTRO ---
+with tab_entry:
+    with st.container(border=True):
+        st.subheader("Adicionar Convidado")
+        
+        st.text_input("Nome do Convidado", placeholder="Digite o nome...", key="temp_name")
+        
+        c_type, c_age = st.columns([2, 1])
+        with c_type: 
+            guest_type = st.radio("Tipo", ["Adulto", "Criança", "Cortesia"], horizontal=True, key="temp_type")
+        
+        with c_age: 
+            if guest_type == "Criança":
+                st.number_input("Idade", min_value=0, max_value=18, step=1, key="temp_age", on_change=add_guest)
+            else:
+                st.empty()
+
+        st.write("")
+        
+        b1, b2 = st.columns([3, 1])
+        with b1:
+            st.button("➕ CONFIRMAR ENTRADA", type="primary", on_click=add_guest)
+        with b2:
+            show_undo = False
+            if st.session_state.guests and st.session_state.last_action_time:
+                seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
+                if seconds_passed <= 15:
+                    show_undo = True
+            if show_undo:
+                st.button("↩️ Desfazer", on_click=remove_last_guest, help="Remove o último convidado")
+
+# --- ABA 2: RELATÓRIOS ---
+with tab_reports:
+    if not df.empty:
+        st.subheader("📈 Fluxo de Chegada (Intervalos de 15 min)")
+        
+        if 'Hora' in df.columns:
+            # Cria uma cópia para manipulação
+            chart_df = df.copy()
+            
+            # Converte string HH:MM para objeto datetime (usando data fictícia de hoje)
+            chart_df['datetime'] = pd.to_datetime(chart_df['Hora'], format='%H:%M').apply(
+                lambda x: x.replace(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
+            )
+            
+            # Arredonda para baixo (floor) a cada 15 min ('15T')
+            chart_df['Intervalo'] = chart_df['datetime'].dt.floor('15T')
+            
+            # Conta quantos chegaram em cada intervalo
+            interval_counts = chart_df['Intervalo'].value_counts().sort_index().reset_index()
+            interval_counts.columns = ['Horário', 'Chegadas']
+            
+            # Formata de volta para HH:MM para ficar bonito no gráfico
+            interval_counts['Horário'] = interval_counts['Horário'].dt.strftime('%H:%M')
+            
+            # Gráfico de Barras Melhorado
+            fig_time = px.bar(
+                interval_counts, 
+                x="Horário", 
+                y="Chegadas", 
+                text="Chegadas",
+                color_discrete_sequence=['#fb8c00']
+            )
+            fig_time.update_layout(
+                margin=dict(t=10,b=10,l=10,r=10), 
+                height=300, 
+                paper_bgcolor='rgba(0,0,0,0)', 
+                plot_bgcolor='rgba(255,255,255,0.1)', 
+                font_color="white",
+                xaxis_title="Horário (Blocos de 15min)",
+                yaxis_title="Pessoas"
+            )
+            st.plotly_chart(fig_time, use_container_width=True)
+
+        col_down, col_table = st.columns([1, 2])
+        
+        with col_down:
+            st.write("#### Exportar")
+            cols_to_drop = ['_is_paying', 'id', 'ID']
+            export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
+            
+            pdf_bytes = generate_pdf_report_v6(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
+            
+            st.download_button("📄 Baixar Relatório PDF", data=pdf_bytes, file_name="lista_final.pdf", mime="application/pdf", use_container_width=True)
+            
+            msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
+            st.link_button("📱 Enviar Resumo no Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
+
+        with col_table:
+            st.write("#### Lista Completa")
+            st.dataframe(export_df, use_container_width=True, hide_index=True, height=300)
+            
+    else:
+        st.info("Nenhum dado para exibir nos relatórios ainda.")
