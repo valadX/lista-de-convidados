@@ -28,11 +28,15 @@ st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wi
 # ==========================================
 
 def get_db_connection():
+    """Conecta ao Google Sheets"""
     if not HAS_GSHEETS: return None
+    
     creds_dict = None
     if "gcp_service_account" in st.secrets: creds_dict = dict(st.secrets["gcp_service_account"])
     elif "gsheets" in st.secrets: creds_dict = dict(st.secrets["gsheets"])
+    
     if not creds_dict: return None
+
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
@@ -43,6 +47,24 @@ def get_db_connection():
         st.error(f"Erro na conexão com o Google: {e}")
         return None
 
+def get_active_parties_today():
+    """Procura na planilha se existem festas rolando HOJE"""
+    sheet = get_db_connection()
+    if not sheet: return []
+    
+    try:
+        data = sheet.get_all_records()
+        today_str = datetime.now().strftime("%d/%m/%Y")
+        active_events = set()
+        for row in data:
+            row_date = str(row.get('Data', ''))
+            row_event = str(row.get('Evento', '')).strip()
+            if row_date == today_str and row_event:
+                active_events.add(row_event)
+        return list(active_events)
+    except:
+        return []
+
 def load_data_from_sheets(target_event_name):
     """Carrega dados APENAS do evento ativo"""
     sheet = get_db_connection()
@@ -50,12 +72,9 @@ def load_data_from_sheets(target_event_name):
         try:
             data = sheet.get_all_records()
             cleaned_data = []
-            
-            # Data de hoje para garantir que não pegue festas antigas com mesmo nome
             today_str = datetime.now().strftime("%d/%m/%Y")
 
             for row in data:
-                # 1. Verifica se pertence a este evento e data
                 row_event = str(row.get('Evento', '')).strip().lower()
                 target_event = str(target_event_name).strip().lower()
                 row_date = str(row.get('Data', ''))
@@ -83,7 +102,6 @@ def load_data_from_sheets(target_event_name):
     return []
 
 def save_guest_to_sheets(guest_dict, event_name):
-    """Salva linha com o nome do EVENTO"""
     sheet = get_db_connection()
     if sheet:
         try:
@@ -95,7 +113,7 @@ def save_guest_to_sheets(guest_dict, event_name):
                 guest_dict['Status'],
                 guest_dict['Hora'],
                 guest_dict['Data'],
-                event_name # Nova coluna: Evento
+                event_name 
             ]
             sheet.append_row(row)
         except:
@@ -125,7 +143,7 @@ def download_logo():
         except: pass
 
 @st.cache_data(show_spinner=False)
-def generate_pdf_report_v8(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+def generate_pdf_report_v9(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     if os.path.exists(LOGO_PATH):
@@ -214,12 +232,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. GESTÃO DE SESSÃO (FESTA ATIVA)
+# 3. GESTÃO DE SESSÃO
 # ==========================================
 
 download_logo()
 
-# Inicializa estado da sessão
 if 'party_active' not in st.session_state:
     st.session_state.party_active = False
 if 'party_name' not in st.session_state:
@@ -231,21 +248,31 @@ if 'guests' not in st.session_state:
 if 'last_action_time' not in st.session_state:
     st.session_state.last_action_time = None
 
+# --- FUNÇÃO PARA ENTRAR EM FESTA EXISTENTE ---
+def join_existing_party():
+    selected = st.session_state.selected_active_party
+    if selected:
+        st.session_state.party_name = selected
+        st.session_state.guest_limit = 100 
+        st.session_state.party_active = True
+        if HAS_GSHEETS:
+            with st.spinner("Baixando dados da festa..."):
+                db_data = load_data_from_sheets(selected)
+                st.session_state.guests = db_data
+        st.rerun()
+
 def start_party():
     if st.session_state.input_party_name:
         st.session_state.party_name = st.session_state.input_party_name
         st.session_state.guest_limit = st.session_state.input_guest_limit
         st.session_state.party_active = True
-        # Carrega dados se já existir essa festa hoje (recuperação de falha)
-        if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
-            with st.spinner("Buscando dados desta festa..."):
-                db_data = load_data_from_sheets(st.session_state.party_name)
-                st.session_state.guests = db_data
+        if HAS_GSHEETS:
+            db_data = load_data_from_sheets(st.session_state.party_name)
+            if db_data: st.session_state.guests = db_data
     else:
         st.warning("Digite o nome da festa!")
 
 def end_party():
-    # A lógica de limpar vem depois de baixar o relatório
     st.session_state.party_active = False
     st.session_state.guests = []
     st.session_state.party_name = ""
@@ -264,6 +291,17 @@ def add_guest():
     if guest_type == "Criança" and age == 0:
         st.warning("⚠️ Informe a idade!")
         return
+
+    # --- TRAVA DE SEGURANÇA ANTI-DUPLICAÇÃO ---
+    # Se o último convidado adicionado tiver o MESMO nome e foi adicionado há menos de 5s, bloqueia.
+    if st.session_state.guests and st.session_state.last_action_time:
+        last_guest = st.session_state.guests[0]
+        seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
+        if last_guest['Nome'] == name and seconds_passed < 5:
+            st.warning(f"⚠️ {name} já foi adicionado agora! (Duplicidade evitada)")
+            st.session_state.temp_name = "" # Limpa o campo mesmo assim
+            return
+    # ------------------------------------------
 
     is_paying = True
     display_age = "-"
@@ -292,7 +330,6 @@ def add_guest():
     st.session_state.guests.insert(0, new_guest)
     
     if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
-        # Passa o nome da festa atual para salvar na coluna Evento
         save_guest_to_sheets(new_guest, st.session_state.party_name)
     
     st.session_state.last_action_time = datetime.now()
@@ -301,15 +338,13 @@ def add_guest():
 def remove_last_guest():
     if st.session_state.guests:
         removed = st.session_state.guests.pop(0)
-        if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
-            delete_guest_from_sheets(removed['id'])
+        if HAS_GSHEETS: delete_guest_from_sheets(removed['id'])
         st.success(f"↩️ Desfeito: {removed['Nome']} removido.")
         st.session_state.last_action_time = None
 
 def remove_guest_by_id(guest_id):
     st.session_state.guests = [g for g in st.session_state.guests if str(g['id']) != str(guest_id)]
-    if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
-        delete_guest_from_sheets(guest_id)
+    if HAS_GSHEETS: delete_guest_from_sheets(guest_id)
 
 def force_refresh():
     if st.session_state.party_active and HAS_GSHEETS:
@@ -333,26 +368,35 @@ else:
     total_paying = 0; total_free = 0; total_cortesia = 0; total_guests = 0
 
 # ==========================================
-# 4. INTERFACE - LÓGICA DE TELAS
+# 4. INTERFACE
 # ==========================================
 
 # BARRA LATERAL
 with st.sidebar:
-    # 1. Se a festa NÃO começou -> Configuração
     if not st.session_state.party_active:
-        st.header("⚙️ Preparar Festa")
+        st.header("⚙️ Início")
         is_connected = HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets)
-        if is_connected: st.success("🟢 Online")
-        else: st.warning("🟡 Offline")
         
-        st.text_input("Nome do Aniversariante/Evento", key="input_party_name", placeholder="Ex: Enzo 5 Anos")
+        if is_connected:
+            st.success("🟢 Online")
+            active_events_today = get_active_parties_today()
+            if active_events_today:
+                st.info(f"📅 Encontrei {len(active_events_today)} festa(s) hoje!")
+                st.selectbox("Continuar festa existente:", options=active_events_today, key="selected_active_party")
+                if st.button("👉 ENTRAR NA FESTA", type="primary"):
+                    join_existing_party()
+                st.markdown("---")
+                st.write("Ou inicie uma nova:")
+        else:
+            st.warning("🟡 Offline")
+        
+        st.text_input("Nome do Novo Evento", key="input_party_name", placeholder="Ex: Enzo 5 Anos")
         st.number_input("Limite do Contrato", min_value=1, value=100, step=5, key="input_guest_limit")
         
-        if st.button("🚀 INICIAR FESTA", type="primary"):
+        if st.button("🚀 INICIAR NOVA FESTA"):
             start_party()
             st.rerun()
             
-    # 2. Se a festa ESTÁ RODANDO -> Controles de Encerramento
     else:
         st.header(f"🎉 {st.session_state.party_name}")
         st.caption(f"Contrato: {st.session_state.guest_limit} pessoas")
@@ -377,20 +421,19 @@ with st.sidebar:
             
         st.divider()
         
-        # Área de Encerramento
         st.subheader("🏁 Encerrar")
         if not df.empty:
             cols_to_drop = ['_is_paying', 'id', 'ID']
             export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
-            pdf_bytes = generate_pdf_report_v8(st.session_state.party_name, export_df, total_paying, total_free, total_cortesia, total_guests, st.session_state.guest_limit)
+            pdf_bytes = generate_pdf_report_v9(st.session_state.party_name, export_df, total_paying, total_free, total_cortesia, total_guests, st.session_state.guest_limit)
             
-            st.download_button("1️⃣ Baixar Relatório Final", data=pdf_bytes, file_name=f"Relatorio_{st.session_state.party_name}.pdf", mime="application/pdf", use_container_width=True)
+            st.download_button("1️⃣ Baixar Relatório", data=pdf_bytes, file_name=f"Relatorio_{st.session_state.party_name}.pdf", mime="application/pdf", use_container_width=True)
             
             msg = f"Relatório Final - {st.session_state.party_name}: {total_paying} Pagantes. Total: {total_guests}/{st.session_state.guest_limit}."
             st.link_button("2️⃣ Enviar no Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
         
         st.write("")
-        if st.button("🔴 ENCERRAR E LIMPAR TELA"):
+        if st.button("🔴 SAIR / ENCERRAR"):
             end_party()
 
 # ÁREA PRINCIPAL
@@ -398,14 +441,11 @@ c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
     if os.path.exists(LOGO_PATH): st.image(LOGO_PATH, use_container_width=True)
 
-# LÓGICA DE EXIBIÇÃO CONDICIONAL
 if not st.session_state.party_active:
-    # Tela de Espera
-    st.markdown("<h1 style='text-align: center;'>Aguardando Início...</h1>", unsafe_allow_html=True)
-    st.info("👈 Use a barra lateral para configurar e iniciar uma nova festa.")
+    st.markdown("<h1 style='text-align: center;'>Controle de Buffet</h1>", unsafe_allow_html=True)
+    st.info("👈 Use a barra lateral para Entrar em uma festa existente ou Iniciar uma nova.")
     
 else:
-    # Tela da Festa Ativa
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.party_name}</h2>", unsafe_allow_html=True)
 
     percent_full = min(total_guests / st.session_state.guest_limit, 1.0)
