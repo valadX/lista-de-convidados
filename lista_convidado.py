@@ -32,8 +32,15 @@ def get_db_connection():
     if not HAS_GSHEETS:
         return None
     
-    # Verifica se os segredos existem no ambiente (Cloud ou Local)
-    if "gsheets" not in st.secrets:
+    # Tenta encontrar as credenciais com o nome que você usou ([gcp_service_account]) 
+    # ou o padrão ([gsheets])
+    creds_dict = None
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+    elif "gsheets" in st.secrets:
+        creds_dict = dict(st.secrets["gsheets"])
+    
+    if not creds_dict:
         return None
 
     try:
@@ -41,9 +48,7 @@ def get_db_connection():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        # Converte o objeto de segredos para dicionário padrão
-        credentials_dict = dict(st.secrets["gsheets"])
-        creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         sheet = client.open(SHEET_NAME).sheet1
         return sheet
@@ -171,12 +176,9 @@ def generate_pdf(party_name, guests_df, total_paying, total_free, total_cortesia
         fill = not fill
         
     # --- CORREÇÃO DEFINITIVA DO PDF (BYTES) ---
-    # Força a saída a ser bytes, não importa a versão da biblioteca
     try:
-        # Tenta padrão FPDF2
         return bytes(pdf.output())
     except:
-        # Fallback para FPDF 1.7 (String -> Bytes)
         return pdf.output(dest='S').encode('latin-1')
 
 # --- CSS (ESTILO) ---
@@ -213,10 +215,10 @@ st.markdown("""
 # Sincronização Inicial
 if 'guests' not in st.session_state:
     st.session_state.guests = []
-    if HAS_GSHEETS and "gsheets" in st.secrets:
-        db_data = load_data_from_sheets()
-        if db_data:
-            st.session_state.guests = db_data
+    # Tenta carregar dados (agora com suporte ao seu nome de chave)
+    db_data = load_data_from_sheets()
+    if db_data:
+        st.session_state.guests = db_data
 
 if 'last_action_time' not in st.session_state:
     st.session_state.last_action_time = None
@@ -258,8 +260,8 @@ def add_guest():
     
     st.session_state.guests.insert(0, new_guest)
     
-    if HAS_GSHEETS and "gsheets" in st.secrets:
-        save_guest_to_sheets(new_guest)
+    # Salva na nuvem
+    save_guest_to_sheets(new_guest)
     
     st.session_state.last_action_time = datetime.now()
     st.session_state.temp_name = "" 
@@ -268,16 +270,14 @@ def remove_last_guest():
     """Desfazer (Memória + Sheets)"""
     if st.session_state.guests:
         removed = st.session_state.guests.pop(0)
-        if HAS_GSHEETS and "gsheets" in st.secrets:
-            delete_guest_from_sheets(removed['id'])
+        delete_guest_from_sheets(removed['id'])
         st.success(f"↩️ Desfeito: {removed['Nome']} removido.")
         st.session_state.last_action_time = None
 
 def remove_guest_by_id(guest_id):
     """Remover específico (Memória + Sheets)"""
     st.session_state.guests = [g for g in st.session_state.guests if g['id'] != guest_id]
-    if HAS_GSHEETS and "gsheets" in st.secrets:
-        delete_guest_from_sheets(guest_id)
+    delete_guest_from_sheets(guest_id)
 
 # --- CÁLCULOS TOTAIS ---
 df = pd.DataFrame(st.session_state.guests)
@@ -297,12 +297,12 @@ else:
 with st.sidebar:
     st.header("⚙️ Configurações & Lista")
     
-    # STATUS CONEXÃO (Agora depende da configuração na nuvem)
-    if HAS_GSHEETS and "gsheets" in st.secrets:
+    # STATUS CONEXÃO (Verificação dupla)
+    if HAS_GSHEETS and ("gcp_service_account" in st.secrets or "gsheets" in st.secrets):
         st.success("🟢 Online (Sincronizado)")
     else:
         st.warning("🟡 Offline (Local)")
-        st.caption("Configure os 'Secrets' no painel do Streamlit Cloud para ativar o Google Sheets.")
+        st.caption("Verifique os 'Secrets' no painel do Streamlit Cloud.")
 
     with st.expander("📝 Dados do Evento", expanded=True):
         party_name = st.text_input("Nome do Evento", value="Aniversário")
