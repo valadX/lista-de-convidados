@@ -9,7 +9,7 @@ import pytz
 import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Controle de Buffet (Auto-Fix)", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wide")
 
 # --- TENTATIVA DE IMPORTAR BIBLIOTECAS DO GOOGLE ---
 try:
@@ -38,7 +38,7 @@ def get_now_str():
     return get_brazil_time().strftime("%H:%M:%S")
 
 # ==========================================
-# 1. FUNÇÕES DE BANCO DE DADOS (COM AUTO-REPARO)
+# 1. FUNÇÕES DE BANCO DE DADOS (COM SYNC DE LIMITE)
 # ==========================================
 
 def get_db_connection():
@@ -63,26 +63,21 @@ def get_db_connection():
         st.sidebar.error(f"❌ Erro de Conexão: {e}")
         return None
 
-def check_and_fix_headers():
-    """
-    CORREÇÃO CRÍTICA: Verifica se a linha 1 tem os cabeçalhos certos.
-    Se a coluna H estiver vazia, escreve 'Evento' nela para o sistema funcionar.
-    """
+def check_and_init_headers():
+    """Verifica se a planilha tem cabeçalhos. Se não, cria."""
     sheet = get_db_connection()
     if not sheet: return
     
     try:
-        # Lê a primeira linha
-        headers = sheet.row_values(1)
-        expected = ["id", "Nome", "Tipo", "Idade", "Status", "Hora", "Data", "Evento"]
+        header = sheet.row_values(1)
+        expected_headers = ["id", "Nome", "Tipo", "Idade", "Status", "Hora", "Data", "Evento"]
         
-        # Se tiver menos colunas que o esperado ou se a coluna Evento estiver errada
-        if len(headers) < 8 or headers != expected:
-            # Força a escrita dos cabeçalhos corretos na linha 1
-            sheet.update(range_name='A1:H1', values=[expected])
-            # st.toast("🔧 Planilha corrigida automaticamente (Cabeçalhos)!")
+        if len(header) < 8 or header != expected_headers:
+            sheet.update(range_name='A1:H1', values=[expected_headers])
+            time.sleep(1)
+            st.rerun()
     except Exception as e:
-        pass # Silencioso para não atrapalhar
+        pass
 
 def get_active_parties_today():
     """Busca festas ativas HOJE na nuvem"""
@@ -95,9 +90,7 @@ def get_active_parties_today():
         
         active_events = set()
         for row in data:
-            # Normalização agressiva
             row_date = str(row.get('Data', '')).strip()
-            # Tenta pegar Evento, se falhar (porque o cabeçalho estava ruim antes), tenta pegar pelo índice
             row_event = str(row.get('Evento', '')).strip()
             
             if row_date == today_str and row_event:
@@ -106,6 +99,32 @@ def get_active_parties_today():
         return list(active_events)
     except Exception as e:
         return []
+
+def get_party_limit_from_sheets(target_event_name):
+    """Recupera o limite de convidados salvo na linha de sistema da festa"""
+    sheet = get_db_connection()
+    if not sheet: return 100
+    
+    try:
+        data = sheet.get_all_records()
+        today_str = get_today_str()
+        target = str(target_event_name).strip().lower()
+        
+        for row in data:
+            row_event = str(row.get('Evento', '')).strip().lower()
+            row_date = str(row.get('Data', '')).strip()
+            row_status = str(row.get('Status', ''))
+            
+            # Procura a linha "SYSTEM_START" desta festa hoje
+            if row_event == target and row_date == today_str and row_status == "SYSTEM_START":
+                # O limite foi salvo na coluna 'Idade'
+                try:
+                    return int(row.get('Idade', 100))
+                except:
+                    return 100
+        return 100 # Padrão se não achar
+    except:
+        return 100
 
 def load_data_from_sheets(target_event_name):
     """Baixa a lista de convidados da festa específica"""
@@ -118,7 +137,6 @@ def load_data_from_sheets(target_event_name):
             target_event = str(target_event_name).strip().lower()
 
             for row in data:
-                # Normaliza chaves (remove espaços extras)
                 row_event = str(row.get('Evento', '')).strip().lower()
                 row_date = str(row.get('Data', '')).strip()
                 
@@ -297,7 +315,7 @@ if 'last_action_time' not in st.session_state: st.session_state.last_action_time
 
 # --- AUTO-REPARO DA PLANILHA AO INICIAR ---
 if HAS_GSHEETS:
-    check_and_fix_headers()
+    check_and_init_headers()
 
 def check_connection_status():
     conn = get_db_connection()
@@ -319,9 +337,11 @@ def handle_party_start(is_new, party_name_input, limit_input=100):
     
     with st.spinner("Conectando à nuvem..."):
         if is_new:
+            # SALVA O LIMITE NO CAMPO IDADE DO MARCO DE SISTEMA
             marker = {
                 "id": "SYSTEM", "Nome": "--- INÍCIO DE FESTA ---", "Tipo": "System",
-                "Idade": "-", "Status": "SYSTEM_START",
+                "Idade": str(limit_input), # <--- AQUI O SEGREDO DO SYNC DO LIMITE
+                "Status": "SYSTEM_START",
                 "Hora": get_now_str(), "Data": get_today_str(), "Evento": party_name_input.strip()
             }
             saved = save_row_to_sheets(marker)
@@ -332,6 +352,23 @@ def handle_party_start(is_new, party_name_input, limit_input=100):
 
         db_data = load_data_from_sheets(st.session_state.party_name)
         st.session_state.guests = db_data if db_data else []
+        st.rerun()
+
+def join_existing_party(name_override=None):
+    selected = name_override if name_override else st.session_state.selected_active_party
+    if selected:
+        st.session_state.party_name = selected
+        st.session_state.party_active = True
+        
+        if HAS_GSHEETS:
+            with st.spinner("Sincronizando..."):
+                # Recupera o limite salvo na nuvem
+                limit = get_party_limit_from_sheets(selected)
+                st.session_state.guest_limit = limit
+                
+                # Recupera os convidados
+                db_data = load_data_from_sheets(selected)
+                st.session_state.guests = db_data if db_data else []
         st.rerun()
 
 def end_party():
@@ -409,9 +446,15 @@ def remove_guest_by_id(guest_id):
 def force_refresh():
     if st.session_state.party_active:
         with st.spinner("Baixando dados..."):
+            # Sync Dados
             db_data = load_data_from_sheets(st.session_state.party_name)
             st.session_state.guests = db_data
-            st.success("Lista atualizada!")
+            
+            # Sync Limite
+            limit = get_party_limit_from_sheets(st.session_state.party_name)
+            st.session_state.guest_limit = limit
+            
+            st.success("Tudo atualizado!")
 
 # --- CÁLCULOS ---
 df = pd.DataFrame(st.session_state.guests)
@@ -438,16 +481,6 @@ with st.sidebar:
         st.error("🔴 Status: OFFLINE (Sem Conexão)")
         st.markdown("**Atenção:** Verifique os 'Secrets' no painel do Streamlit.")
 
-    # ÁREA DE DIAGNÓSTICO (DEBUG)
-    with st.expander("🕵️ Diagnóstico da Planilha"):
-        if st.button("Ver Dados Brutos"):
-            conn = get_db_connection()
-            if conn:
-                raw_data = conn.get_all_records()
-                st.write(raw_data)
-            else:
-                st.error("Não conectou.")
-
     if not st.session_state.party_active:
         st.header("🎉 Seleção de Festa")
         
@@ -461,7 +494,7 @@ with st.sidebar:
             if active_events:
                 selected_party = st.selectbox("Selecione para entrar:", active_events)
                 if st.button("👉 ENTRAR AGORA", type="primary"):
-                    handle_party_start(False, selected_party)
+                    join_existing_party(selected_party)
             else:
                 st.info("Nenhuma festa encontrada para hoje.")
         
