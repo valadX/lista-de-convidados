@@ -8,8 +8,8 @@ import plotly.express as px
 import pytz
 import time
 
-# --- CONFIGURAÇÃO DA PÁGINA (Deve ser a primeira linha) ---
-st.set_page_config(page_title="Controle de Buffet (Sync Real)", page_icon="📡", layout="wide")
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Controle de Buffet (Auto-Fix)", page_icon="🛠️", layout="wide")
 
 # --- TENTATIVA DE IMPORTAR BIBLIOTECAS DO GOOGLE ---
 try:
@@ -35,10 +35,10 @@ def get_today_str():
     return get_brazil_time().strftime("%d/%m/%Y")
 
 def get_now_str():
-    return get_brazil_time().strftime("%H:%M:%S") # Com segundos para debug
+    return get_brazil_time().strftime("%H:%M:%S")
 
 # ==========================================
-# 1. FUNÇÕES DE BANCO DE DADOS (SEM CACHE PARA FORÇAR SYNC)
+# 1. FUNÇÕES DE BANCO DE DADOS (COM AUTO-REPARO)
 # ==========================================
 
 def get_db_connection():
@@ -46,7 +46,6 @@ def get_db_connection():
     if not HAS_GSHEETS: return None
     
     creds_dict = None
-    # Tenta achar a senha nos dois formatos comuns
     if "gcp_service_account" in st.secrets: 
         creds_dict = dict(st.secrets["gcp_service_account"])
     elif "gsheets" in st.secrets: 
@@ -58,37 +57,54 @@ def get_db_connection():
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
-        # Tenta abrir a planilha. Se não achar, dá erro.
         sheet = client.open(SHEET_NAME).sheet1
         return sheet
     except Exception as e:
         st.sidebar.error(f"❌ Erro de Conexão: {e}")
         return None
 
-# REMOVI O CACHE DESSA FUNÇÃO PROPOSITALMENTE PARA FORÇAR ATUALIZAÇÃO NO CELULAR
+def check_and_fix_headers():
+    """
+    CORREÇÃO CRÍTICA: Verifica se a linha 1 tem os cabeçalhos certos.
+    Se a coluna H estiver vazia, escreve 'Evento' nela para o sistema funcionar.
+    """
+    sheet = get_db_connection()
+    if not sheet: return
+    
+    try:
+        # Lê a primeira linha
+        headers = sheet.row_values(1)
+        expected = ["id", "Nome", "Tipo", "Idade", "Status", "Hora", "Data", "Evento"]
+        
+        # Se tiver menos colunas que o esperado ou se a coluna Evento estiver errada
+        if len(headers) < 8 or headers != expected:
+            # Força a escrita dos cabeçalhos corretos na linha 1
+            sheet.update(range_name='A1:H1', values=[expected])
+            # st.toast("🔧 Planilha corrigida automaticamente (Cabeçalhos)!")
+    except Exception as e:
+        pass # Silencioso para não atrapalhar
+
 def get_active_parties_today():
     """Busca festas ativas HOJE na nuvem"""
     sheet = get_db_connection()
     if not sheet: return []
     
     try:
-        # Pega todas as linhas
         data = sheet.get_all_records()
         today_str = get_today_str()
         
         active_events = set()
         for row in data:
-            # Normalização
+            # Normalização agressiva
             row_date = str(row.get('Data', '')).strip()
+            # Tenta pegar Evento, se falhar (porque o cabeçalho estava ruim antes), tenta pegar pelo índice
             row_event = str(row.get('Evento', '')).strip()
             
-            # Debug silencioso: print(f"Lendo linha: {row_date} - {row_event}")
             if row_date == today_str and row_event:
                 active_events.add(row_event)
         
         return list(active_events)
     except Exception as e:
-        st.error(f"Erro ao ler festas: {e}")
         return []
 
 def load_data_from_sheets(target_event_name):
@@ -102,12 +118,11 @@ def load_data_from_sheets(target_event_name):
             target_event = str(target_event_name).strip().lower()
 
             for row in data:
+                # Normaliza chaves (remove espaços extras)
                 row_event = str(row.get('Evento', '')).strip().lower()
                 row_date = str(row.get('Data', '')).strip()
                 
-                # Filtra: Mesma Data E Mesmo Nome de Evento
                 if row_event == target_event and row_date == today_str:
-                    # Ignora marcador de sistema
                     if str(row.get('Status')) == "SYSTEM_START":
                         continue
 
@@ -137,7 +152,6 @@ def save_row_to_sheets(row_data):
     sheet = get_db_connection()
     if sheet:
         try:
-            # Converte valores para lista na ordem certa
             row_values = [
                 str(row_data.get('id', '')),
                 row_data.get('Nome', ''),
@@ -198,7 +212,6 @@ def generate_pdf_report_v12(party_name, guests_df, total_paying, total_free, tot
     pdf.cell(0, 10, txt=f"Data: {get_today_str()} | Hora: {get_now_str()}", ln=True, align='L')
     pdf.ln(20)
     
-    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
@@ -210,7 +223,6 @@ def generate_pdf_report_v12(party_name, guests_df, total_paying, total_free, tot
     pdf.cell(0, 8, f"Cortesias: {total_cortesia}", ln=True)
     pdf.ln(10)
     
-    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -283,22 +295,22 @@ if 'guest_limit' not in st.session_state: st.session_state.guest_limit = 100
 if 'guests' not in st.session_state: st.session_state.guests = []
 if 'last_action_time' not in st.session_state: st.session_state.last_action_time = None
 
-# Função crítica: Testa se a conexão existe antes de deixar fazer qualquer coisa
+# --- AUTO-REPARO DA PLANILHA AO INICIAR ---
+if HAS_GSHEETS:
+    check_and_fix_headers()
+
 def check_connection_status():
     conn = get_db_connection()
-    if conn:
-        return True
+    if conn: return True
     return False
 
-# --- ENTRAR OU INICIAR ---
 def handle_party_start(is_new, party_name_input, limit_input=100):
     if not party_name_input:
         st.warning("Digite o nome da festa!")
         return
 
-    # Verifica conexão ANTES de deixar começar
     if not check_connection_status():
-        st.error("❌ SEM CONEXÃO COM A PLANILHA! Não é possível sincronizar. Verifique os 'Secrets'.")
+        st.error("❌ ERRO CRÍTICO: Sem conexão com a planilha! Verifique os 'Secrets'.")
         return
 
     st.session_state.party_name = party_name_input.strip()
@@ -306,7 +318,6 @@ def handle_party_start(is_new, party_name_input, limit_input=100):
     st.session_state.party_active = True
     
     with st.spinner("Conectando à nuvem..."):
-        # Se for nova, cria o marco na planilha
         if is_new:
             marker = {
                 "id": "SYSTEM", "Nome": "--- INÍCIO DE FESTA ---", "Tipo": "System",
@@ -315,11 +326,10 @@ def handle_party_start(is_new, party_name_input, limit_input=100):
             }
             saved = save_row_to_sheets(marker)
             if not saved:
-                st.error("Falha crítica ao criar festa na nuvem.")
+                st.error("Não foi possível salvar na planilha. Tente novamente.")
                 st.session_state.party_active = False
                 return
 
-        # Carrega dados frescos
         db_data = load_data_from_sheets(st.session_state.party_name)
         st.session_state.guests = db_data if db_data else []
         st.rerun()
@@ -344,7 +354,6 @@ def add_guest():
         st.warning("Idade vazia!")
         return
 
-    # Anti-duplicação (5s)
     if st.session_state.guests and st.session_state.last_action_time:
         last_guest = st.session_state.guests[0]
         seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
@@ -376,14 +385,13 @@ def add_guest():
         "_is_paying": is_paying
     }
     
-    # Salva Nuvem PRIMEIRO. Se falhar, avisa.
     if save_row_to_sheets(new_guest):
         st.session_state.guests.insert(0, new_guest)
         st.session_state.last_action_time = datetime.now()
         st.session_state.temp_name = ""
         st.success(f"✅ {name} salvo!")
     else:
-        st.error("ERRO AO SALVAR NA NUVEM! Verifique a conexão.")
+        st.error("ERRO AO SALVAR NA NUVEM! Tente novamente.")
 
 def remove_last_guest():
     if st.session_state.guests:
@@ -423,13 +431,22 @@ else:
 
 # BARRA LATERAL
 with st.sidebar:
-    # STATUS CONEXÃO (DIAGNÓSTICO)
     is_online = check_connection_status()
     if is_online:
         st.success("🟢 Status: ONLINE (Sincronizado)")
     else:
         st.error("🔴 Status: OFFLINE (Sem Conexão)")
         st.markdown("**Atenção:** Verifique os 'Secrets' no painel do Streamlit.")
+
+    # ÁREA DE DIAGNÓSTICO (DEBUG)
+    with st.expander("🕵️ Diagnóstico da Planilha"):
+        if st.button("Ver Dados Brutos"):
+            conn = get_db_connection()
+            if conn:
+                raw_data = conn.get_all_records()
+                st.write(raw_data)
+            else:
+                st.error("Não conectou.")
 
     if not st.session_state.party_active:
         st.header("🎉 Seleção de Festa")
@@ -446,7 +463,7 @@ with st.sidebar:
                 if st.button("👉 ENTRAR AGORA", type="primary"):
                     handle_party_start(False, selected_party)
             else:
-                st.info("Nenhuma festa ativa encontrada.")
+                st.info("Nenhuma festa encontrada para hoje.")
         
         st.markdown("---")
         st.markdown("#### Iniciar Nova:")
