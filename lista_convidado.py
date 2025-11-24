@@ -5,7 +5,11 @@ from fpdf import FPDF
 import requests
 import os
 import plotly.express as px
-import pytz # Biblioteca de fuso horário
+import pytz
+import time
+
+# --- CONFIGURAÇÃO DA PÁGINA (Deve ser a primeira linha) ---
+st.set_page_config(page_title="Controle de Buffet (Sync Real)", page_icon="📡", layout="wide")
 
 # --- TENTATIVA DE IMPORTAR BIBLIOTECAS DO GOOGLE ---
 try:
@@ -21,26 +25,20 @@ LOGO_PATH = "logo_cache.png"
 SENHA_ADMIN = "1234"
 SHEET_NAME = "Controle_Buffet" 
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wide")
-
 # ==========================================
-# 0. FUNÇÕES DE TEMPO (FUSO HORÁRIO BRASIL)
+# 0. FUNÇÕES DE TEMPO (BRASIL)
 # ==========================================
 def get_brazil_time():
-    """Retorna a data e hora atuais de São Paulo"""
     return datetime.now(pytz.timezone('America/Sao_Paulo'))
 
 def get_today_str():
-    """Retorna data formato DD/MM/YYYY BR"""
     return get_brazil_time().strftime("%d/%m/%Y")
 
 def get_now_str():
-    """Retorna hora formato HH:MM BR"""
-    return get_brazil_time().strftime("%H:%M")
+    return get_brazil_time().strftime("%H:%M:%S") # Com segundos para debug
 
 # ==========================================
-# 1. FUNÇÕES DE BANCO DE DADOS (GOOGLE SHEETS)
+# 1. FUNÇÕES DE BANCO DE DADOS (SEM CACHE PARA FORÇAR SYNC)
 # ==========================================
 
 def get_db_connection():
@@ -48,8 +46,11 @@ def get_db_connection():
     if not HAS_GSHEETS: return None
     
     creds_dict = None
-    if "gcp_service_account" in st.secrets: creds_dict = dict(st.secrets["gcp_service_account"])
-    elif "gsheets" in st.secrets: creds_dict = dict(st.secrets["gsheets"])
+    # Tenta achar a senha nos dois formatos comuns
+    if "gcp_service_account" in st.secrets: 
+        creds_dict = dict(st.secrets["gcp_service_account"])
+    elif "gsheets" in st.secrets: 
+        creds_dict = dict(st.secrets["gsheets"])
     
     if not creds_dict: return None
 
@@ -57,58 +58,63 @@ def get_db_connection():
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
+        # Tenta abrir a planilha. Se não achar, dá erro.
         sheet = client.open(SHEET_NAME).sheet1
         return sheet
     except Exception as e:
-        st.error(f"Erro na conexão com o Google: {e}")
+        st.sidebar.error(f"❌ Erro de Conexão: {e}")
         return None
 
+# REMOVI O CACHE DESSA FUNÇÃO PROPOSITALMENTE PARA FORÇAR ATUALIZAÇÃO NO CELULAR
 def get_active_parties_today():
-    """Procura na planilha se existem festas rolando HOJE (Data BR)"""
+    """Busca festas ativas HOJE na nuvem"""
     sheet = get_db_connection()
     if not sheet: return []
     
     try:
+        # Pega todas as linhas
         data = sheet.get_all_records()
-        today_str = get_today_str() # Usa data Brasil
+        today_str = get_today_str()
         
         active_events = set()
         for row in data:
-            row_date = str(row.get('Data', ''))
+            # Normalização
+            row_date = str(row.get('Data', '')).strip()
             row_event = str(row.get('Evento', '')).strip()
             
+            # Debug silencioso: print(f"Lendo linha: {row_date} - {row_event}")
             if row_date == today_str and row_event:
                 active_events.add(row_event)
+        
         return list(active_events)
-    except:
+    except Exception as e:
+        st.error(f"Erro ao ler festas: {e}")
         return []
 
 def load_data_from_sheets(target_event_name):
-    """Carrega dados APENAS do evento ativo"""
+    """Baixa a lista de convidados da festa específica"""
     sheet = get_db_connection()
     if sheet:
         try:
             data = sheet.get_all_records()
             cleaned_data = []
-            today_str = get_today_str() # Usa data Brasil
+            today_str = get_today_str()
+            target_event = str(target_event_name).strip().lower()
 
             for row in data:
                 row_event = str(row.get('Evento', '')).strip().lower()
-                target_event = str(target_event_name).strip().lower()
-                row_date = str(row.get('Data', ''))
-                row_status = str(row.get('Status', ''))
+                row_date = str(row.get('Data', '')).strip()
                 
-                # Ignora linhas de sistema
-                if row_status == "SYSTEM_START":
-                    continue
-
-                # Compara Evento e Data
+                # Filtra: Mesma Data E Mesmo Nome de Evento
                 if row_event == target_event and row_date == today_str:
+                    # Ignora marcador de sistema
+                    if str(row.get('Status')) == "SYSTEM_START":
+                        continue
+
                     raw_id = row.get('id') or row.get('ID') or ''
-                    safe_id = str(raw_id)
                     
                     clean_row = {
-                        'id': safe_id,
+                        'id': str(raw_id),
                         'Nome': row.get('Nome', ''),
                         'Tipo': row.get('Tipo', 'Adulto'),
                         'Idade': row.get('Idade', '-'),
@@ -122,26 +128,32 @@ def load_data_from_sheets(target_event_name):
             
             return cleaned_data[::-1]
         except Exception as e:
+            st.error(f"Erro ao ler dados: {e}")
             return []
     return []
 
-def save_guest_to_sheets(guest_dict, event_name):
+def save_row_to_sheets(row_data):
+    """Função genérica para salvar qualquer linha"""
     sheet = get_db_connection()
     if sheet:
         try:
-            row = [
-                str(guest_dict['id']),
-                guest_dict['Nome'],
-                guest_dict['Tipo'],
-                guest_dict['Idade'],
-                guest_dict['Status'],
-                guest_dict['Hora'],
-                guest_dict['Data'],
-                event_name 
+            # Converte valores para lista na ordem certa
+            row_values = [
+                str(row_data.get('id', '')),
+                row_data.get('Nome', ''),
+                row_data.get('Tipo', ''),
+                row_data.get('Idade', ''),
+                row_data.get('Status', ''),
+                row_data.get('Hora', ''),
+                row_data.get('Data', ''),
+                row_data.get('Evento', '')
             ]
-            sheet.append_row(row)
-        except:
-            pass
+            sheet.append_row(row_values)
+            return True
+        except Exception as e:
+            st.error(f"Erro ao salvar na nuvem: {e}")
+            return False
+    return False
 
 def delete_guest_from_sheets(guest_id):
     sheet = get_db_connection()
@@ -149,11 +161,13 @@ def delete_guest_from_sheets(guest_id):
         try:
             cell = sheet.find(str(guest_id))
             if cell: sheet.delete_rows(cell.row)
+            return True
         except:
-            pass
+            return False
+    return False
 
 # ==========================================
-# 2. FUNÇÕES VISUAIS
+# 2. VISUAL E PDF
 # ==========================================
 
 @st.cache_resource
@@ -167,7 +181,7 @@ def download_logo():
         except: pass
 
 @st.cache_data(show_spinner=False)
-def generate_pdf_report_v11(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+def generate_pdf_report_v12(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     if os.path.exists(LOGO_PATH):
@@ -177,25 +191,26 @@ def generate_pdf_report_v11(party_name, guests_df, total_paying, total_free, tot
     pdf.set_font("Helvetica", 'B', 16)
     pdf.set_xy(55, 15)
     pdf.set_text_color(106, 27, 154)
-    pdf.cell(0, 10, txt=f"Relatório Final: {party_name}", ln=True, align='L')
+    pdf.cell(0, 10, txt=f"Relatório: {party_name}", ln=True, align='L')
     pdf.set_xy(55, 23)
     pdf.set_font("Helvetica", size=10)
     pdf.set_text_color(50, 50, 50)
-    pdf.cell(0, 10, txt=f"Data: {get_today_str()} | Encerrado às: {get_now_str()}", ln=True, align='L')
+    pdf.cell(0, 10, txt=f"Data: {get_today_str()} | Hora: {get_now_str()}", ln=True, align='L')
     pdf.ln(20)
     
+    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo Financeiro e Público", ln=True, fill=True)
+    pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
     
-    pdf.cell(0, 8, f"Limite Contratado: {guest_limit}", ln=True)
+    pdf.cell(0, 8, f"Contrato: {guest_limit}", ln=True)
     pdf.cell(0, 8, f"Total Presente: {total_guests}", ln=True)
-    pdf.ln(2)
     pdf.cell(0, 8, f"Pagantes: {total_paying}", ln=True)
     pdf.cell(0, 8, f"Isentos (<=7): {total_free}", ln=True)
     pdf.cell(0, 8, f"Cortesias: {total_cortesia}", ln=True)
     pdf.ln(10)
     
+    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -261,68 +276,53 @@ st.markdown("""
 
 download_logo()
 
-if 'party_active' not in st.session_state:
-    st.session_state.party_active = False
-if 'party_name' not in st.session_state:
-    st.session_state.party_name = ""
-if 'guest_limit' not in st.session_state:
-    st.session_state.guest_limit = 100
-if 'guests' not in st.session_state:
-    st.session_state.guests = []
-if 'last_action_time' not in st.session_state:
-    st.session_state.last_action_time = None
+# Inicializa sessão
+if 'party_active' not in st.session_state: st.session_state.party_active = False
+if 'party_name' not in st.session_state: st.session_state.party_name = ""
+if 'guest_limit' not in st.session_state: st.session_state.guest_limit = 100
+if 'guests' not in st.session_state: st.session_state.guests = []
+if 'last_action_time' not in st.session_state: st.session_state.last_action_time = None
 
-# --- FUNÇÃO PARA ENTRAR EM FESTA EXISTENTE ---
-def join_existing_party(name_override=None):
-    # Se foi passado um nome manual, usa ele. Se não, usa o selecionado no combo.
-    selected = name_override if name_override else st.session_state.selected_active_party
-    
-    if selected:
-        st.session_state.party_name = selected
-        st.session_state.guest_limit = 100 
-        st.session_state.party_active = True
-        if HAS_GSHEETS:
-            with st.spinner("Sincronizando dados..."):
-                db_data = load_data_from_sheets(selected)
-                # Se achou dados, carrega. Se não achou (é nova), inicia vazia.
-                if db_data:
-                    st.session_state.guests = db_data
-                else:
-                    st.session_state.guests = [] 
-                    # Se entrou manualmente numa festa nova, cria o marco agora
-                    start_system_marker(selected)
-        st.rerun()
+# Função crítica: Testa se a conexão existe antes de deixar fazer qualquer coisa
+def check_connection_status():
+    conn = get_db_connection()
+    if conn:
+        return True
+    return False
 
-def start_system_marker(party_name):
-    """Cria o marco inicial na planilha para o celular achar"""
-    if HAS_GSHEETS:
-        system_marker = {
-            "id": "SYSTEM", 
-            "Nome": "-- INÍCIO DA FESTA --", 
-            "Tipo": "System",
-            "Idade": "-", 
-            "Status": "SYSTEM_START",
-            "Hora": get_now_str(), 
-            "Data": get_today_str()
-        }
-        save_guest_to_sheets(system_marker, party_name)
-
-def start_party():
-    if st.session_state.input_party_name:
-        party_name = st.session_state.input_party_name
-        st.session_state.party_name = party_name
-        st.session_state.guest_limit = st.session_state.input_guest_limit
-        st.session_state.party_active = True
-        
-        # Cria o marco inicial imediatamente
-        start_system_marker(party_name)
-        
-        # Tenta carregar (caso seja retomada de crash)
-        if HAS_GSHEETS:
-            db_data = load_data_from_sheets(party_name)
-            if db_data: st.session_state.guests = db_data
-    else:
+# --- ENTRAR OU INICIAR ---
+def handle_party_start(is_new, party_name_input, limit_input=100):
+    if not party_name_input:
         st.warning("Digite o nome da festa!")
+        return
+
+    # Verifica conexão ANTES de deixar começar
+    if not check_connection_status():
+        st.error("❌ SEM CONEXÃO COM A PLANILHA! Não é possível sincronizar. Verifique os 'Secrets'.")
+        return
+
+    st.session_state.party_name = party_name_input.strip()
+    st.session_state.guest_limit = limit_input
+    st.session_state.party_active = True
+    
+    with st.spinner("Conectando à nuvem..."):
+        # Se for nova, cria o marco na planilha
+        if is_new:
+            marker = {
+                "id": "SYSTEM", "Nome": "--- INÍCIO DE FESTA ---", "Tipo": "System",
+                "Idade": "-", "Status": "SYSTEM_START",
+                "Hora": get_now_str(), "Data": get_today_str(), "Evento": party_name_input.strip()
+            }
+            saved = save_row_to_sheets(marker)
+            if not saved:
+                st.error("Falha crítica ao criar festa na nuvem.")
+                st.session_state.party_active = False
+                return
+
+        # Carrega dados frescos
+        db_data = load_data_from_sheets(st.session_state.party_name)
+        st.session_state.guests = db_data if db_data else []
+        st.rerun()
 
 def end_party():
     st.session_state.party_active = False
@@ -338,19 +338,19 @@ def add_guest():
     age = st.session_state.get('temp_age', 0)
     
     if not name:
-        st.warning("⚠️ Digite o nome!")
+        st.warning("Nome vazio!")
         return
     if guest_type == "Criança" and age == 0:
-        st.warning("⚠️ Informe a idade!")
+        st.warning("Idade vazia!")
         return
 
-    # --- TRAVA DE SEGURANÇA ANTI-DUPLICAÇÃO ---
+    # Anti-duplicação (5s)
     if st.session_state.guests and st.session_state.last_action_time:
         last_guest = st.session_state.guests[0]
         seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
         if last_guest['Nome'] == name and seconds_passed < 5:
-            st.warning(f"⚠️ {name} já foi adicionado agora! (Duplicidade evitada)")
-            st.session_state.temp_name = "" # Limpa o campo
+            st.toast(f"⚠️ {name} duplicado evitado!")
+            st.session_state.temp_name = ""
             return
 
     is_paying = True
@@ -371,43 +371,44 @@ def add_guest():
     new_guest = {
         "id": unique_id, "Nome": name, "Tipo": guest_type,
         "Idade": display_age, "Status": status_label,
-        "Hora": get_now_str(), 
-        "Data": get_today_str(),
+        "Hora": get_now_str(), "Data": get_today_str(),
+        "Evento": st.session_state.party_name,
         "_is_paying": is_paying
     }
     
-    st.session_state.guests.insert(0, new_guest)
-    
-    if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
-        save_guest_to_sheets(new_guest, st.session_state.party_name)
-    
-    st.session_state.last_action_time = datetime.now()
-    st.session_state.temp_name = "" 
+    # Salva Nuvem PRIMEIRO. Se falhar, avisa.
+    if save_row_to_sheets(new_guest):
+        st.session_state.guests.insert(0, new_guest)
+        st.session_state.last_action_time = datetime.now()
+        st.session_state.temp_name = ""
+        st.success(f"✅ {name} salvo!")
+    else:
+        st.error("ERRO AO SALVAR NA NUVEM! Verifique a conexão.")
 
 def remove_last_guest():
     if st.session_state.guests:
         removed = st.session_state.guests.pop(0)
-        if HAS_GSHEETS: delete_guest_from_sheets(removed['id'])
-        st.success(f"↩️ Desfeito: {removed['Nome']} removido.")
+        if delete_guest_from_sheets(removed['id']):
+            st.success("Removido da nuvem.")
+        else:
+            st.warning("Removido localmente, mas erro na nuvem.")
         st.session_state.last_action_time = None
 
 def remove_guest_by_id(guest_id):
     st.session_state.guests = [g for g in st.session_state.guests if str(g['id']) != str(guest_id)]
-    if HAS_GSHEETS: delete_guest_from_sheets(guest_id)
+    delete_guest_from_sheets(guest_id)
 
 def force_refresh():
-    if st.session_state.party_active and HAS_GSHEETS:
-        with st.spinner("Sincronizando..."):
+    if st.session_state.party_active:
+        with st.spinner("Baixando dados..."):
             db_data = load_data_from_sheets(st.session_state.party_name)
             st.session_state.guests = db_data
-            st.success("Sincronizado!")
+            st.success("Lista atualizada!")
 
 # --- CÁLCULOS ---
 df = pd.DataFrame(st.session_state.guests)
 if not df.empty:
     if 'id' in df.columns: df['id'] = df['id'].astype(str)
-    if 'ID' in df.columns: df['ID'] = df['ID'].astype(str)
-    
     total_paying = df[df['_is_paying'] == True].shape[0]
     total_cortesia = df[df['Tipo'] == 'Cortesia'].shape[0]
     total_not_paying_all = df[df['_is_paying'] == False].shape[0]
@@ -422,44 +423,48 @@ else:
 
 # BARRA LATERAL
 with st.sidebar:
-    if not st.session_state.party_active:
-        st.header("⚙️ Início (Data: " + get_today_str() + ")")
-        is_connected = HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets)
-        
-        if is_connected:
-            st.success("🟢 Online")
-            
-            st.markdown("### 📡 Festas Rolando Hoje")
-            if st.button("🔄 Buscar Festas"):
-                st.rerun()
-                
-            active_events_today = get_active_parties_today()
-            
-            if active_events_today:
-                st.selectbox("Selecione para entrar:", options=active_events_today, key="selected_active_party")
-                if st.button("👉 ENTRAR NESTA FESTA", type="primary"):
-                    join_existing_party()
-            else:
-                st.info("Nenhuma festa encontrada hoje.")
-                
-            st.markdown("---")
-            st.write("Ou digite o nome exato para forçar entrada:")
-        else:
-            st.warning("🟡 Offline")
-        
-        # Se não achou na lista, digita aqui e inicia/entra
-        st.text_input("Nome do Evento (Novo ou Existente)", key="input_party_name", placeholder="Ex: Enzo 5 Anos")
-        st.number_input("Limite do Contrato", min_value=1, value=100, step=5, key="input_guest_limit")
-        
-        if st.button("🚀 INICIAR / ENTRAR"):
-            start_party()
-            st.rerun()
-            
+    # STATUS CONEXÃO (DIAGNÓSTICO)
+    is_online = check_connection_status()
+    if is_online:
+        st.success("🟢 Status: ONLINE (Sincronizado)")
     else:
-        st.header(f"🎉 {st.session_state.party_name}")
-        st.caption(f"Contrato: {st.session_state.guest_limit} pessoas")
+        st.error("🔴 Status: OFFLINE (Sem Conexão)")
+        st.markdown("**Atenção:** Verifique os 'Secrets' no painel do Streamlit.")
+
+    if not st.session_state.party_active:
+        st.header("🎉 Seleção de Festa")
         
-        if st.button("🔄 Sincronizar Agora"):
+        if is_online:
+            st.markdown("#### Festas Rolando Hoje:")
+            active_events = get_active_parties_today()
+            
+            if st.button("🔄 Atualizar Lista de Festas"):
+                st.rerun()
+
+            if active_events:
+                selected_party = st.selectbox("Selecione para entrar:", active_events)
+                if st.button("👉 ENTRAR AGORA", type="primary"):
+                    handle_party_start(False, selected_party)
+            else:
+                st.info("Nenhuma festa ativa encontrada.")
+        
+        st.markdown("---")
+        st.markdown("#### Iniciar Nova:")
+        new_party_name = st.text_input("Nome do Evento", placeholder="Ex: Maria 15 Anos")
+        new_limit = st.number_input("Limite Contrato", min_value=1, value=100, step=5)
+        
+        if st.button("🚀 CRIAR NOVA FESTA"):
+            if is_online:
+                handle_party_start(True, new_party_name, new_limit)
+            else:
+                st.error("Você precisa estar ONLINE para criar uma festa.")
+
+    else:
+        # MODO FESTA ATIVA
+        st.header(f"🎈 {st.session_state.party_name}")
+        st.caption(f"Contrato: {st.session_state.guest_limit}")
+        
+        if st.button("🔄 Sincronizar Agora", type="primary"):
             force_refresh()
             
         st.divider()
@@ -469,7 +474,7 @@ with st.sidebar:
                 guest_options = {f"{g.get('Nome','-')} ({g.get('Hora','-')})": str(g.get('id','')) for g in st.session_state.guests}
                 selected_name = st.selectbox("Selecione:", options=list(guest_options.keys()))
                 password_input = st.text_input("Senha Admin", type="password")
-                if st.button("❌ Confirmar Exclusão"):
+                if st.button("❌ Confirmar"):
                     if password_input == SENHA_ADMIN:
                         if selected_name in guest_options:
                             remove_guest_by_id(guest_options[selected_name])
@@ -478,39 +483,37 @@ with st.sidebar:
             else: st.info("Lista vazia.")
             
         st.divider()
+        st.subheader("🏁 Finalizar")
         
-        st.subheader("🏁 Encerrar")
         if not df.empty:
             cols_to_drop = ['_is_paying', 'id', 'ID']
             export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
-            pdf_bytes = generate_pdf_report_v11(st.session_state.party_name, export_df, total_paying, total_free, total_cortesia, total_guests, st.session_state.guest_limit)
+            pdf_bytes = generate_pdf_report_v12(st.session_state.party_name, export_df, total_paying, total_free, total_cortesia, total_guests, st.session_state.guest_limit)
             
-            st.download_button("1️⃣ Baixar Relatório", data=pdf_bytes, file_name=f"Relatorio_{st.session_state.party_name}.pdf", mime="application/pdf", use_container_width=True)
-            
-            msg = f"Relatório Final - {st.session_state.party_name}: {total_paying} Pagantes. Total: {total_guests}/{st.session_state.guest_limit}."
-            st.link_button("2️⃣ Enviar no Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
+            st.download_button("📄 Baixar Relatório", data=pdf_bytes, file_name=f"Relatorio.pdf", mime="application/pdf", use_container_width=True)
+            msg = f"Resumo {st.session_state.party_name}: {total_paying} Pagantes. Total: {total_guests}/{st.session_state.guest_limit}."
+            st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
         
-        st.write("")
-        if st.button("🔴 SAIR / ENCERRAR"):
+        if st.button("🔴 SAIR DA FESTA"):
             end_party()
 
-# ÁREA PRINCIPAL
+# TELA PRINCIPAL
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
     if os.path.exists(LOGO_PATH): st.image(LOGO_PATH, use_container_width=True)
 
 if not st.session_state.party_active:
-    st.markdown("<h1 style='text-align: center;'>Controle de Buffet</h1>", unsafe_allow_html=True)
-    st.info("👈 Na barra lateral: Se a festa já existe, selecione na lista. Se não aparecer, digite o nome e clique em Iniciar.")
+    st.markdown("<h1 style='text-align: center;'>Bem-vindo!</h1>", unsafe_allow_html=True)
+    st.info("👈 Use o menu lateral para entrar em uma festa ou criar uma nova.")
     
 else:
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.party_name}</h2>", unsafe_allow_html=True)
 
     percent_full = min(total_guests / st.session_state.guest_limit, 1.0)
-    st.write(f"**Lotação:** {total_guests} de {st.session_state.guest_limit} pessoas")
+    st.write(f"**Lotação:** {total_guests} de {st.session_state.guest_limit}")
     st.progress(percent_full)
     if total_guests >= st.session_state.guest_limit: 
-        st.error("⚠️ LIMITE DO CONTRATO ATINGIDO! (Entrada Liberada)")
+        st.error("⚠️ LIMITE ATINGIDO!")
 
     col1, col2, col3 = st.columns(3)
     with col1: st.markdown(f"""<div class="metric-card card-purple"><div class="label">Pagantes</div><div class="big-number">{total_paying}</div></div>""", unsafe_allow_html=True)
@@ -533,37 +536,35 @@ else:
                 else: st.empty()
             st.write("")
             b1, b2 = st.columns([3, 1])
-            with b1: st.button("➕ CONFIRMAR ENTRADA", type="primary", on_click=add_guest)
+            with b1: st.button("➕ CONFIRMAR", type="primary", on_click=add_guest)
             with b2:
                 show_undo = False
                 if st.session_state.guests and st.session_state.last_action_time:
                     seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
                     if seconds_passed <= 15: show_undo = True
-                if show_undo: st.button("↩️ Desfazer", on_click=remove_last_guest, help="Remove o último convidado")
+                if show_undo: st.button("↩️ Desfazer", on_click=remove_last_guest)
 
     with tab_reports:
         st.write("### 🔒 Área Restrita")
         senha = st.text_input("Senha Admin:", type="password", key="report_pwd")
         if senha == SENHA_ADMIN:
             if not df.empty and 'Hora' in df.columns:
-                chart_df = df.copy()
-                # Converte hora string para datetime para agrupar
+                # Gráfico
                 try:
-                    chart_df['datetime'] = pd.to_datetime(chart_df['Hora'], format='%H:%M').apply(lambda x: x.replace(year=datetime.now().year))
+                    chart_df = df.copy()
+                    chart_df['datetime'] = pd.to_datetime(chart_df['Hora'], format='%H:%M:%S').apply(lambda x: x.replace(year=datetime.now().year))
                     chart_df['Intervalo'] = chart_df['datetime'].dt.floor('15T')
                     interval_counts = chart_df['Intervalo'].value_counts().sort_index().reset_index()
                     interval_counts.columns = ['Horário', 'Chegadas']
                     interval_counts['Horário'] = interval_counts['Horário'].dt.strftime('%H:%M')
-                    
                     fig_time = px.bar(interval_counts, x="Horário", y="Chegadas", text="Chegadas", color_discrete_sequence=['#fb8c00'])
                     fig_time.update_layout(height=300, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(255,255,255,0.1)', font_color="white")
                     st.plotly_chart(fig_time, use_container_width=True)
-                except:
-                    st.warning("Dados de horário insuficientes para gráfico.")
-                
+                except: st.info("Gráfico indisponível (formato de hora)")
+
                 st.write("#### Lista Completa")
                 cols_to_drop = ['_is_paying', 'id', 'ID']
                 display_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
                 st.dataframe(display_df, use_container_width=True, hide_index=True, height=300)
-            else: st.info("Sem dados ainda.")
+            else: st.info("Sem dados.")
         elif senha: st.error("Senha Incorreta!")
