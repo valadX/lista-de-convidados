@@ -32,8 +32,8 @@ def get_db_connection():
     if not HAS_GSHEETS:
         return None
     
+    # Verifica se os segredos existem no ambiente (Cloud ou Local)
     if "gsheets" not in st.secrets:
-        # Silencioso para não assustar se não tiver configurado ainda
         return None
 
     try:
@@ -41,6 +41,7 @@ def get_db_connection():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
+        # Converte o objeto de segredos para dicionário padrão
         credentials_dict = dict(st.secrets["gsheets"])
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scope)
         client = gspread.authorize(creds)
@@ -56,10 +57,9 @@ def load_data_from_sheets():
     if sheet:
         try:
             data = sheet.get_all_records()
-            # Adiciona campo de controle interno
             for row in data:
                 row['_is_paying'] = True if row['Status'] == 'Pagante' else False
-            return data[::-1] # Inverte para mostrar o mais recente primeiro
+            return data[::-1]
         except Exception:
             return []
     return []
@@ -80,7 +80,7 @@ def save_guest_to_sheets(guest_dict):
             ]
             sheet.append_row(row)
         except:
-            pass # Falhou silenciosamente para não travar a porta
+            pass
 
 def delete_guest_from_sheets(guest_id):
     """Remove convidado da planilha"""
@@ -113,6 +113,7 @@ def download_logo():
 
 @st.cache_data(show_spinner=False)
 def generate_pdf(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+    # Cria o PDF
     pdf = FPDF()
     pdf.add_page()
     
@@ -169,7 +170,18 @@ def generate_pdf(party_name, guests_df, total_paying, total_free, total_cortesia
         pdf.cell(20, 8, str(row['Hora']), 1, 1, 'C', fill)
         fill = not fill
         
-    return bytes(pdf.output())
+    # --- CORREÇÃO DE COMPATIBILIDADE (AQUI ESTAVA O ERRO) ---
+    try:
+        # Tenta pegar como string (padrão antigo)
+        output_string = pdf.output(dest='S')
+        if isinstance(output_string, str):
+            # Se for string, converte para bytes
+            return output_string.encode('latin-1')
+        # Se já for bytes (versão nova), retorna direto
+        return output_string
+    except:
+        # Última tentativa: deixar a biblioteca decidir o padrão
+        return pdf.output()
 
 # --- CSS (ESTILO) ---
 st.markdown("""
@@ -205,7 +217,6 @@ st.markdown("""
 # Sincronização Inicial
 if 'guests' not in st.session_state:
     st.session_state.guests = []
-    # Se configurado, tenta puxar do Sheets na primeira carga
     if HAS_GSHEETS and "gsheets" in st.secrets:
         db_data = load_data_from_sheets()
         if db_data:
@@ -249,33 +260,26 @@ def add_guest():
         "Hora": datetime.now().strftime("%H:%M"), "_is_paying": is_paying
     }
     
-    # 1. Salva Local
     st.session_state.guests.insert(0, new_guest)
     
-    # 2. Salva Nuvem (se houver)
     if HAS_GSHEETS and "gsheets" in st.secrets:
         save_guest_to_sheets(new_guest)
     
-    # Reset e Timer
     st.session_state.last_action_time = datetime.now()
     st.session_state.temp_name = "" 
-    # Não limpamos o tipo propositalmente para facilitar inserções em lote
 
 def remove_last_guest():
     """Desfazer (Memória + Sheets)"""
     if st.session_state.guests:
         removed = st.session_state.guests.pop(0)
-        
         if HAS_GSHEETS and "gsheets" in st.secrets:
             delete_guest_from_sheets(removed['id'])
-            
         st.success(f"↩️ Desfeito: {removed['Nome']} removido.")
         st.session_state.last_action_time = None
 
 def remove_guest_by_id(guest_id):
     """Remover específico (Memória + Sheets)"""
     st.session_state.guests = [g for g in st.session_state.guests if g['id'] != guest_id]
-    
     if HAS_GSHEETS and "gsheets" in st.secrets:
         delete_guest_from_sheets(guest_id)
 
@@ -294,15 +298,15 @@ else:
 # 4. INTERFACE GRÁFICA (LAYOUT)
 # ==========================================
 
-# --- MENU LATERAL (ADMIN) ---
 with st.sidebar:
     st.header("⚙️ Configurações & Lista")
     
-    # Status Conexão
+    # STATUS CONEXÃO (Agora depende da configuração na nuvem)
     if HAS_GSHEETS and "gsheets" in st.secrets:
         st.success("🟢 Online (Sincronizado)")
     else:
         st.warning("🟡 Offline (Local)")
+        st.caption("Configure os 'Secrets' no painel do Streamlit Cloud para ativar o Google Sheets.")
 
     with st.expander("📝 Dados do Evento", expanded=True):
         party_name = st.text_input("Nome do Evento", value="Aniversário")
@@ -327,14 +331,13 @@ with st.sidebar:
 
     st.subheader("📂 Relatórios")
     if not df.empty:
-        # Gráficos
         st.write("**📈 Chegadas por Horário:**")
         time_data = df.copy(); time_data['Contagem'] = 1; time_data = time_data.sort_values('Hora')
         fig_time = px.histogram(time_data, x="Hora", title=None, color_discrete_sequence=['#fb8c00'])
         fig_time.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=150, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(255,255,255,0.1)', font_color="white")
         st.plotly_chart(fig_time, use_container_width=True)
 
-        # PDF e Zap
+        # PDF Seguro
         cols_to_drop = ['_is_paying', 'id']
         export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
         pdf_bytes = generate_pdf(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
@@ -351,7 +354,7 @@ with st.sidebar:
         st.session_state.guests = []
         st.rerun()
 
-# --- TELA PRINCIPAL (ENTRADA) ---
+# --- TELA PRINCIPAL ---
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
     if os.path.exists(LOGO_PATH): st.image(LOGO_PATH, use_container_width=True)
@@ -359,14 +362,12 @@ with c2:
 
 st.markdown(f"<h2 style='text-align: center;'>{party_name}</h2>", unsafe_allow_html=True)
 
-# Lotação
 percent_full = min(total_guests / guest_limit, 1.0)
 st.write(f"**Lotação:** {total_guests} de {guest_limit} pessoas")
 st.progress(percent_full)
 if total_guests >= guest_limit: 
     st.error("⚠️ LIMITE DO CONTRATO ATINGIDO! (Entrada Liberada)")
 
-# Placar
 col1, col2, col3 = st.columns(3)
 with col1: st.markdown(f"""<div class="metric-card card-purple"><div class="label">Pagantes</div><div class="big-number">{total_paying}</div></div>""", unsafe_allow_html=True)
 with col2: st.markdown(f"""<div class="metric-card card-green"><div class="label">Isentos</div><div class="big-number">{total_free}</div><div style="font-size:0.7em">Crianças</div></div>""", unsafe_allow_html=True)
@@ -374,40 +375,31 @@ with col3: st.markdown(f"""<div class="metric-card card-orange"><div class="labe
 
 st.write("") 
 
-# --- FORMULÁRIO DE REGISTRO ---
 with st.container(border=True):
     st.subheader("📍 Registrar Entrada")
     
-    # Campo Nome (Sem on_change para não enviar ao dar Enter sem querer)
     st.text_input("Nome do Convidado", placeholder="Digite o nome...", key="temp_name")
     
-    # Opções
     c_type, c_age = st.columns([2, 1])
     with c_type: 
         guest_type = st.radio("Tipo", ["Adulto", "Criança", "Cortesia"], horizontal=True, key="temp_type")
     
     with c_age: 
         if guest_type == "Criança":
-            # Enter aqui envia o form (agilidade)
             st.number_input("Idade", min_value=0, max_value=18, step=1, key="temp_age", on_change=add_guest)
         else:
             st.empty()
 
     st.write("")
     
-    # Botões
     b1, b2 = st.columns([3, 1])
-    
     with b1:
         st.button("➕ CONFIRMAR ENTRADA", type="primary", on_click=add_guest)
-        
     with b2:
-        # Lógica do Botão Desfazer (15 segundos)
         show_undo = False
         if st.session_state.guests and st.session_state.last_action_time:
             seconds_passed = (datetime.now() - st.session_state.last_action_time).total_seconds()
             if seconds_passed <= 15:
                 show_undo = True
-        
         if show_undo:
             st.button("↩️ Desfazer", on_click=remove_last_guest, help="Remove o último convidado")
