@@ -319,6 +319,7 @@ with st.sidebar:
     if not st.session_state.active:
         st.header("🎉 Iniciar / Entrar")
         
+        # Buscar Festas
         if st.button("🔄 Buscar Festas Hoje"): st.rerun()
         active = get_active_parties_today()
         
@@ -341,6 +342,7 @@ with st.sidebar:
             if not new_name: st.error("Nome obrigatório!")
             elif not get_db_connection(): st.error("Sem conexão!")
             else:
+                # Marco Inicial
                 marker = {
                     "id": "SYSTEM", "Nome": "--- START ---", "Tipo": "System",
                     "Idade": str(new_limit), "Status": "SYSTEM_START",
@@ -462,16 +464,32 @@ if st.session_state.active:
         pwd = st.text_input("Senha Admin", type="password", key="report_pass")
         if pwd == SENHA_ADMIN:
             if not df.empty:
-                # Gráfico
+                # Gráfico Robusto
                 if 'Hora' in df.columns:
                     try:
-                        df['dt'] = pd.to_datetime(df['Hora'], format='%H:%M').apply(lambda x: x.replace(year=2024))
-                        df['15min'] = df['dt'].dt.floor('15T')
-                        counts_time = df['15min'].value_counts().sort_index().reset_index()
+                        chart_df = df.copy()
+                        # Garante string e corta para HH:MM independente de segundos
+                        chart_df['Hora'] = chart_df['Hora'].astype(str).apply(lambda x: x[:5])
+                        
+                        chart_df['dt'] = pd.to_datetime(chart_df['Hora'], format='%H:%M').apply(
+                            lambda x: x.replace(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
+                        )
+                        chart_df['15min'] = chart_df['dt'].dt.floor('15T')
+                        counts_time = chart_df['15min'].value_counts().sort_index().reset_index()
                         counts_time.columns = ['Horário', 'Chegadas']
                         counts_time['Horário'] = counts_time['Horário'].dt.strftime('%H:%M')
-                        st.plotly_chart(px.bar(counts_time, x='Horário', y='Chegadas', text='Chegadas'), use_container_width=True)
-                    except: pass
+                        
+                        fig = px.bar(counts_time, x='Horário', y='Chegadas', text='Chegadas')
+                        fig.update_traces(textposition='outside', marker_color='#fb8c00')
+                        fig.update_layout(
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            font_color="white",
+                            height=300
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Erro no gráfico: {e}")
                 
                 st.dataframe(df.drop(columns=['_is_paying', 'id'], errors='ignore'), use_container_width=True, hide_index=True)
             else: st.info("Sem dados.")
