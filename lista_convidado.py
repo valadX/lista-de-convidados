@@ -18,7 +18,7 @@ except ImportError:
 LOGO_URL = "https://lanbele.com.br/wp-content/uploads/2025/09/IMG-20250920-WA0029-1024x585.png"
 LOGO_PATH = "logo_cache.png"
 SENHA_ADMIN = "1234"
-SHEET_NAME = "Controle_Buffet" # Nome exato da sua planilha no Google
+SHEET_NAME = "Controle_Buffet" 
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wide")
@@ -28,12 +28,11 @@ st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wi
 # ==========================================
 
 def get_db_connection():
-    """Conecta ao Google Sheets usando as credenciais do st.secrets"""
+    """Conecta ao Google Sheets"""
     if not HAS_GSHEETS:
         return None
     
-    # Tenta encontrar as credenciais com o nome que você usou ([gcp_service_account]) 
-    # ou o padrão ([gsheets])
+    # Tenta encontrar credenciais (suporte a ambos os nomes comuns de secrets)
     creds_dict = None
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -57,20 +56,35 @@ def get_db_connection():
         return None
 
 def load_data_from_sheets():
-    """Carrega dados da nuvem para o sistema"""
+    """Carrega dados e normaliza as chaves (ID -> id)"""
     sheet = get_db_connection()
     if sheet:
         try:
             data = sheet.get_all_records()
+            cleaned_data = []
+            
             for row in data:
-                row['_is_paying'] = True if row['Status'] == 'Pagante' else False
-            return data[::-1]
-        except Exception:
+                # Normalização de chaves para evitar KeyError
+                # Se no Sheets estiver 'ID', transforma em 'id' para o sistema
+                new_row = row.copy()
+                if 'ID' in row and 'id' not in row:
+                    new_row['id'] = row['ID']
+                
+                # Lógica de Pagamento
+                # Garante que a coluna Status existe, senão assume valor padrão
+                status = new_row.get('Status', 'Pagante')
+                new_row['_is_paying'] = True if status == 'Pagante' else False
+                
+                cleaned_data.append(new_row)
+                
+            return cleaned_data[::-1]
+        except Exception as e:
+            print(f"Erro ao ler planilha: {e}") # Log no console do servidor
             return []
     return []
 
 def save_guest_to_sheets(guest_dict):
-    """Salva uma nova linha na planilha"""
+    """Salva linha"""
     sheet = get_db_connection()
     if sheet:
         try:
@@ -88,7 +102,7 @@ def save_guest_to_sheets(guest_dict):
             pass
 
 def delete_guest_from_sheets(guest_id):
-    """Remove convidado da planilha"""
+    """Deleta linha"""
     sheet = get_db_connection()
     if sheet:
         try:
@@ -117,8 +131,7 @@ def download_logo():
     return True
 
 @st.cache_data(show_spinner=False)
-def generate_pdf(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
-    # Cria o PDF
+def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     
@@ -164,24 +177,35 @@ def generate_pdf(party_name, guests_df, total_paying, total_free, total_cortesia
         if fill: pdf.set_fill_color(240, 240, 245)
         else: pdf.set_fill_color(255, 255, 255)
         try:
-            nome = str(row['Nome']).encode('latin-1', 'replace').decode('latin-1')
-            tipo = str(row['Tipo']).encode('latin-1', 'replace').decode('latin-1')
-            status = str(row['Status']).encode('latin-1', 'replace').decode('latin-1')
+            # Tratamento robusto para evitar erros de chave ou nulos
+            r_nome = str(row.get('Nome', '-'))
+            r_tipo = str(row.get('Tipo', '-'))
+            r_status = str(row.get('Status', '-'))
+            r_idade = str(row.get('Idade', '-'))
+            r_hora = str(row.get('Hora', '-'))
+
+            nome = r_nome.encode('latin-1', 'replace').decode('latin-1')
+            tipo = r_tipo.encode('latin-1', 'replace').decode('latin-1')
+            status = r_status.encode('latin-1', 'replace').decode('latin-1')
         except:
-            nome = str(row['Nome']); tipo = str(row['Tipo']); status = str(row['Status'])
+            nome = str(row.get('Nome', '-'))
+            tipo = str(row.get('Tipo', '-'))
+            status = str(row.get('Status', '-'))
 
         pdf.cell(80, 8, nome, 1, 0, 'L', fill); pdf.cell(30, 8, tipo, 1, 0, 'C', fill)
-        pdf.cell(30, 8, str(row['Idade']), 1, 0, 'C', fill); pdf.cell(30, 8, status, 1, 0, 'C', fill)
-        pdf.cell(20, 8, str(row['Hora']), 1, 1, 'C', fill)
+        pdf.cell(30, 8, str(r_idade), 1, 0, 'C', fill); pdf.cell(30, 8, status, 1, 0, 'C', fill)
+        pdf.cell(20, 8, str(r_hora), 1, 1, 'C', fill)
         fill = not fill
         
-    # --- CORREÇÃO DEFINITIVA DO PDF (BYTES) ---
+    # Output Bytes Garantido
     try:
-        return bytes(pdf.output())
+        raw = pdf.output()
+        if isinstance(raw, str): return raw.encode('latin-1')
+        return bytes(raw)
     except:
         return pdf.output(dest='S').encode('latin-1')
 
-# --- CSS (ESTILO) ---
+# --- CSS ---
 st.markdown("""
     <style>
     .stApp { background-color: #2e003e; color: white; }
@@ -209,16 +233,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. LÓGICA DE NEGÓCIO E ESTADO
+# 3. LÓGICA DE NEGÓCIO
 # ==========================================
 
-# Sincronização Inicial
+# Sincronização
 if 'guests' not in st.session_state:
     st.session_state.guests = []
-    # Tenta carregar dados (agora com suporte ao seu nome de chave)
-    db_data = load_data_from_sheets()
-    if db_data:
-        st.session_state.guests = db_data
+    if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
+        db_data = load_data_from_sheets()
+        if db_data:
+            st.session_state.guests = db_data
 
 if 'last_action_time' not in st.session_state:
     st.session_state.last_action_time = None
@@ -226,7 +250,6 @@ if 'last_action_time' not in st.session_state:
 download_logo()
 
 def add_guest():
-    """Adiciona convidado (Memória + Sheets)"""
     name = st.session_state.temp_name
     guest_type = st.session_state.temp_type
     age = st.session_state.get('temp_age', 0)
@@ -259,27 +282,26 @@ def add_guest():
     }
     
     st.session_state.guests.insert(0, new_guest)
-    
-    # Salva na nuvem
-    save_guest_to_sheets(new_guest)
+    if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
+        save_guest_to_sheets(new_guest)
     
     st.session_state.last_action_time = datetime.now()
     st.session_state.temp_name = "" 
 
 def remove_last_guest():
-    """Desfazer (Memória + Sheets)"""
     if st.session_state.guests:
         removed = st.session_state.guests.pop(0)
-        delete_guest_from_sheets(removed['id'])
+        if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
+            delete_guest_from_sheets(removed['id'])
         st.success(f"↩️ Desfeito: {removed['Nome']} removido.")
         st.session_state.last_action_time = None
 
 def remove_guest_by_id(guest_id):
-    """Remover específico (Memória + Sheets)"""
     st.session_state.guests = [g for g in st.session_state.guests if g['id'] != guest_id]
-    delete_guest_from_sheets(guest_id)
+    if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
+        delete_guest_from_sheets(guest_id)
 
-# --- CÁLCULOS TOTAIS ---
+# --- CÁLCULOS ---
 df = pd.DataFrame(st.session_state.guests)
 if not df.empty:
     total_paying = df[df['_is_paying'] == True].shape[0]
@@ -291,18 +313,18 @@ else:
     total_paying = 0; total_free = 0; total_cortesia = 0; total_guests = 0
 
 # ==========================================
-# 4. INTERFACE GRÁFICA (LAYOUT)
+# 4. INTERFACE
 # ==========================================
 
 with st.sidebar:
     st.header("⚙️ Configurações & Lista")
     
-    # STATUS CONEXÃO (Verificação dupla)
-    if HAS_GSHEETS and ("gcp_service_account" in st.secrets or "gsheets" in st.secrets):
+    is_connected = HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets)
+    if is_connected:
         st.success("🟢 Online (Sincronizado)")
     else:
         st.warning("🟡 Offline (Local)")
-        st.caption("Verifique os 'Secrets' no painel do Streamlit Cloud.")
+        st.caption("Configure os 'Secrets' no painel.")
 
     with st.expander("📝 Dados do Evento", expanded=True):
         party_name = st.text_input("Nome do Evento", value="Aniversário")
@@ -313,13 +335,22 @@ with st.sidebar:
     with st.expander("🗑️ Excluir Convidado (Senha)"):
         if not df.empty:
             st.warning("Requer Senha")
-            guest_options = {f"{g['Nome']} ({g['Hora']})": g['id'] for g in st.session_state.guests}
+            # Correção na criação da lista de opções para evitar KeyError se 'Nome' ou 'Hora' faltar
+            guest_options = {}
+            for g in st.session_state.guests:
+                # Garante que pegamos o valor ou um padrão se a chave faltar
+                g_nome = g.get('Nome', 'Sem Nome')
+                g_hora = g.get('Hora', '--:--')
+                g_id = g.get('id', 'sem_id')
+                guest_options[f"{g_nome} ({g_hora})"] = g_id
+            
             selected_name = st.selectbox("Selecione:", options=list(guest_options.keys()))
             password_input = st.text_input("Senha Admin", type="password")
             if st.button("❌ Confirmar"):
                 if password_input == SENHA_ADMIN:
-                    remove_guest_by_id(guest_options[selected_name])
-                    st.success("Removido!"); st.rerun()
+                    if selected_name in guest_options:
+                        remove_guest_by_id(guest_options[selected_name])
+                        st.success("Removido!"); st.rerun()
                 else: st.error("Senha errada!")
         else: st.info("Lista vazia.")
     
@@ -327,17 +358,18 @@ with st.sidebar:
 
     st.subheader("📂 Relatórios")
     if not df.empty:
-        # Gráficos
         st.write("**📈 Chegadas por Horário:**")
-        time_data = df.copy(); time_data['Contagem'] = 1; time_data = time_data.sort_values('Hora')
-        fig_time = px.histogram(time_data, x="Hora", title=None, color_discrete_sequence=['#fb8c00'])
-        fig_time.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=150, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(255,255,255,0.1)', font_color="white")
-        st.plotly_chart(fig_time, use_container_width=True)
+        # Garante que existe coluna Hora
+        if 'Hora' in df.columns:
+            time_data = df.copy(); time_data['Contagem'] = 1; time_data = time_data.sort_values('Hora')
+            fig_time = px.histogram(time_data, x="Hora", title=None, color_discrete_sequence=['#fb8c00'])
+            fig_time.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=150, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(255,255,255,0.1)', font_color="white")
+            st.plotly_chart(fig_time, use_container_width=True)
 
-        # PDF Seguro
         cols_to_drop = ['_is_paying', 'id']
         export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
-        pdf_bytes = generate_pdf(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
+        
+        pdf_bytes = generate_pdf_report_v3(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
         
         st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="lista.pdf", mime="application/pdf")
         msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
