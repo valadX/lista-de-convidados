@@ -170,18 +170,14 @@ def generate_pdf(party_name, guests_df, total_paying, total_free, total_cortesia
         pdf.cell(20, 8, str(row['Hora']), 1, 1, 'C', fill)
         fill = not fill
         
-    # --- CORREÇÃO DE COMPATIBILIDADE (AQUI ESTAVA O ERRO) ---
+    # --- CORREÇÃO DEFINITIVA DO PDF (BYTES) ---
+    # Força a saída a ser bytes, não importa a versão da biblioteca
     try:
-        # Tenta pegar como string (padrão antigo)
-        output_string = pdf.output(dest='S')
-        if isinstance(output_string, str):
-            # Se for string, converte para bytes
-            return output_string.encode('latin-1')
-        # Se já for bytes (versão nova), retorna direto
-        return output_string
+        # Tenta padrão FPDF2
+        return bytes(pdf.output())
     except:
-        # Última tentativa: deixar a biblioteca decidir o padrão
-        return pdf.output()
+        # Fallback para FPDF 1.7 (String -> Bytes)
+        return pdf.output(dest='S').encode('latin-1')
 
 # --- CSS (ESTILO) ---
 st.markdown("""
@@ -331,6 +327,7 @@ with st.sidebar:
 
     st.subheader("📂 Relatórios")
     if not df.empty:
+        # Gráficos
         st.write("**📈 Chegadas por Horário:**")
         time_data = df.copy(); time_data['Contagem'] = 1; time_data = time_data.sort_values('Hora')
         fig_time = px.histogram(time_data, x="Hora", title=None, color_discrete_sequence=['#fb8c00'])
