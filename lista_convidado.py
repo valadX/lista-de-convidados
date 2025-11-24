@@ -158,7 +158,7 @@ def generate_pdf_report_v5(party_name, guests_df, total_paying, total_free, tota
     pdf.cell(0, 8, f"Total Geral Presente: {total_guests}", ln=True)
     pdf.ln(2)
     pdf.cell(0, 8, f"Total Pagantes (Contrato): {total_paying}", ln=True)
-    pdf.cell(0, 8, f"Crianças Isentas (< 8 anos): {total_free}", ln=True)
+    pdf.cell(0, 8, f"Crianças Isentas (< 7 anos): {total_free}", ln=True)
     pdf.cell(0, 8, f"Cortesias (Família/Staff): {total_cortesia}", ln=True)
     
     pdf.ln(10)
