@@ -32,7 +32,6 @@ def get_db_connection():
     if not HAS_GSHEETS:
         return None
     
-    # Tenta encontrar credenciais (suporte a ambos os nomes comuns de secrets)
     creds_dict = None
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -64,14 +63,15 @@ def load_data_from_sheets():
             cleaned_data = []
             
             for row in data:
-                # Normalização de chaves para evitar KeyError
-                # Se no Sheets estiver 'ID', transforma em 'id' para o sistema
+                # Normalização de chaves
                 new_row = row.copy()
+                # Garante que 'id' existe, mesmo se a planilha tiver 'ID'
                 if 'ID' in row and 'id' not in row:
-                    new_row['id'] = row['ID']
+                    new_row['id'] = str(row['ID']) # Força string aqui também
+                elif 'id' in row:
+                    new_row['id'] = str(row['id'])
                 
-                # Lógica de Pagamento
-                # Garante que a coluna Status existe, senão assume valor padrão
+                # Garante status
                 status = new_row.get('Status', 'Pagante')
                 new_row['_is_paying'] = True if status == 'Pagante' else False
                 
@@ -79,7 +79,6 @@ def load_data_from_sheets():
                 
             return cleaned_data[::-1]
         except Exception as e:
-            print(f"Erro ao ler planilha: {e}") # Log no console do servidor
             return []
     return []
 
@@ -89,7 +88,7 @@ def save_guest_to_sheets(guest_dict):
     if sheet:
         try:
             row = [
-                guest_dict['id'],
+                str(guest_dict['id']), # Força string ao salvar
                 guest_dict['Nome'],
                 guest_dict['Tipo'],
                 guest_dict['Idade'],
@@ -131,7 +130,7 @@ def download_logo():
     return True
 
 @st.cache_data(show_spinner=False)
-def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+def generate_pdf_report_v4(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     
@@ -139,7 +138,6 @@ def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, tota
         try: pdf.image(LOGO_PATH, x=10, y=10, w=40)
         except: pass
 
-    # Cabeçalho
     pdf.set_font("Helvetica", 'B', 16)
     pdf.set_xy(55, 15)
     pdf.set_text_color(106, 27, 154)
@@ -150,7 +148,6 @@ def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, tota
     pdf.cell(0, 10, txt=f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align='L')
     pdf.ln(20)
     
-    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo de Público", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
@@ -164,7 +161,6 @@ def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, tota
     
     pdf.ln(10)
     
-    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -177,7 +173,6 @@ def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, tota
         if fill: pdf.set_fill_color(240, 240, 245)
         else: pdf.set_fill_color(255, 255, 255)
         try:
-            # Tratamento robusto para evitar erros de chave ou nulos
             r_nome = str(row.get('Nome', '-'))
             r_tipo = str(row.get('Tipo', '-'))
             r_status = str(row.get('Status', '-'))
@@ -197,7 +192,6 @@ def generate_pdf_report_v3(party_name, guests_df, total_paying, total_free, tota
         pdf.cell(20, 8, str(r_hora), 1, 1, 'C', fill)
         fill = not fill
         
-    # Output Bytes Garantido
     try:
         raw = pdf.output()
         if isinstance(raw, str): return raw.encode('latin-1')
@@ -236,7 +230,6 @@ st.markdown("""
 # 3. LÓGICA DE NEGÓCIO
 # ==========================================
 
-# Sincronização
 if 'guests' not in st.session_state:
     st.session_state.guests = []
     if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
@@ -274,7 +267,9 @@ def add_guest():
         is_paying = False
         status_label = "Cortesia"
 
-    unique_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    # ID gerado como string explicitamente
+    unique_id = str(datetime.now().strftime("%Y%m%d%H%M%S%f"))
+    
     new_guest = {
         "id": unique_id, "Nome": name, "Tipo": guest_type,
         "Idade": display_age, "Status": status_label,
@@ -297,13 +292,19 @@ def remove_last_guest():
         st.session_state.last_action_time = None
 
 def remove_guest_by_id(guest_id):
-    st.session_state.guests = [g for g in st.session_state.guests if g['id'] != guest_id]
+    st.session_state.guests = [g for g in st.session_state.guests if str(g['id']) != str(guest_id)]
     if HAS_GSHEETS and ("gsheets" in st.secrets or "gcp_service_account" in st.secrets):
         delete_guest_from_sheets(guest_id)
 
-# --- CÁLCULOS ---
+# --- CÁLCULOS E CORREÇÃO DO OVERFLOW ---
 df = pd.DataFrame(st.session_state.guests)
+
+# --- A CORREÇÃO MÁGICA ESTÁ AQUI ---
+# Se o dataframe não estiver vazio, forçamos o ID a ser string
 if not df.empty:
+    if 'id' in df.columns:
+        df['id'] = df['id'].astype(str) # Isso previne o OverflowError
+    
     total_paying = df[df['_is_paying'] == True].shape[0]
     total_cortesia = df[df['Tipo'] == 'Cortesia'].shape[0]
     total_not_paying_all = df[df['_is_paying'] == False].shape[0]
@@ -335,13 +336,11 @@ with st.sidebar:
     with st.expander("🗑️ Excluir Convidado (Senha)"):
         if not df.empty:
             st.warning("Requer Senha")
-            # Correção na criação da lista de opções para evitar KeyError se 'Nome' ou 'Hora' faltar
             guest_options = {}
             for g in st.session_state.guests:
-                # Garante que pegamos o valor ou um padrão se a chave faltar
                 g_nome = g.get('Nome', 'Sem Nome')
                 g_hora = g.get('Hora', '--:--')
-                g_id = g.get('id', 'sem_id')
+                g_id = str(g.get('id', ''))
                 guest_options[f"{g_nome} ({g_hora})"] = g_id
             
             selected_name = st.selectbox("Selecione:", options=list(guest_options.keys()))
@@ -359,7 +358,6 @@ with st.sidebar:
     st.subheader("📂 Relatórios")
     if not df.empty:
         st.write("**📈 Chegadas por Horário:**")
-        # Garante que existe coluna Hora
         if 'Hora' in df.columns:
             time_data = df.copy(); time_data['Contagem'] = 1; time_data = time_data.sort_values('Hora')
             fig_time = px.histogram(time_data, x="Hora", title=None, color_discrete_sequence=['#fb8c00'])
@@ -367,9 +365,10 @@ with st.sidebar:
             st.plotly_chart(fig_time, use_container_width=True)
 
         cols_to_drop = ['_is_paying', 'id']
+        # Garante que remove 'id' antes de exibir para evitar ver o número gigante feio
         export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
         
-        pdf_bytes = generate_pdf_report_v3(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
+        pdf_bytes = generate_pdf_report_v4(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
         
         st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="lista.pdf", mime="application/pdf")
         msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
