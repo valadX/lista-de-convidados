@@ -1,0 +1,9 @@
+Ignorar arquivos de segredo e cache
+
+gen-lang-client-0576606249-ebf1f8d8edb3.json
+
+Opcional, mas recomendado para projetos Python
+
+pycache/
+*.pyc
+.DS_Store
