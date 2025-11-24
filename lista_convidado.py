@@ -46,52 +46,54 @@ def download_logo():
                 with open(LOGO_PATH, "wb") as f: f.write(response.content)
         except: pass
 
-# Estilo Visual Otimizado (CSS)
+# Estilo Visual (Cartões Coloridos + Fundo Unificado)
 st.markdown("""
     <style>
+    /* Fundo Principal */
     .stApp { background-color: #2e003e; color: white; }
     
-    /* Inputs mais bonitos */
+    /* Barra Lateral na mesma cor */
+    section[data-testid="stSidebar"] { 
+        background-color: #2e003e; 
+        border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    /* Inputs */
     input, .stNumberInput input { 
         color: white !important; 
         font-weight: bold; 
-        background-color: rgba(255, 255, 255, 0.1) !important;
+        background-color: rgba(255, 255, 255, 0.15) !important;
     }
     
-    /* Remove bordas feias */
     div[data-baseweb="input"] {
-        border: 1px solid rgba(255,255,255,0.2);
-        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.3);
+        border-radius: 8px;
     }
 
-    /* Cartões de Métricas Premium */
+    /* Cartões de Métricas (Estilo Original Colorido) */
     .metric-card {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 20px;
-        border-radius: 15px;
+        padding: 15px;
+        border-radius: 12px;
         text-align: center;
-        transition: transform 0.2s;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
+        margin-bottom: 10px;
+        border: 1px solid rgba(255,255,255,0.1);
+        color: white;
     }
-    .metric-card:hover { transform: translateY(-5px); }
+    .card-purple { background: linear-gradient(135deg, #6a1b9a, #4a148c); }
+    .card-green { background: linear-gradient(135deg, #43a047, #2e7d32); }
+    .card-orange { background: linear-gradient(135deg, #fb8c00, #ef6c00); }
     
-    .card-purple { border-bottom: 4px solid #ab47bc; }
-    .card-green { border-bottom: 4px solid #66bb6a; }
-    .card-orange { border-bottom: 4px solid #ffa726; }
-    
-    .big-number { font-size: 3em; font-weight: 800; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
-    .label { font-size: 0.85em; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.8; margin-bottom: 5px; }
+    .big-number { font-size: 2.8em; font-weight: bold; margin: 0; text-shadow: 1px 1px 3px rgba(0,0,0,0.5); }
+    .label { font-size: 0.9em; font-weight: 500; text-transform: uppercase; opacity: 0.9; }
     
     /* Botões */
     div.stButton > button { 
         width: 100%; 
-        border-radius: 10px; 
-        height: 3.5em; 
+        border-radius: 8px; 
+        height: 3em; 
         font-weight: bold; 
         border: none;
-        transition: all 0.3s ease;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -101,25 +103,19 @@ st.markdown("""
 # ==========================================
 
 def get_db_connection():
-    """Conecta ao Google Sheets com tratamento de erro silencioso"""
     if not HAS_GSHEETS: return None
-    
     creds_dict = None
     if "gcp_service_account" in st.secrets: creds_dict = dict(st.secrets["gcp_service_account"])
     elif "gsheets" in st.secrets: creds_dict = dict(st.secrets["gsheets"])
-    
     if not creds_dict: return None
-
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         return client.open(SHEET_NAME).sheet1
-    except Exception:
-        return None
+    except Exception: return None
 
 def check_and_init_headers():
-    """Auto-reparo da planilha"""
     sheet = get_db_connection()
     if not sheet: return
     try:
@@ -128,7 +124,6 @@ def check_and_init_headers():
     except: pass
 
 def get_active_parties_today():
-    """Busca festas ativas hoje"""
     sheet = get_db_connection()
     if not sheet: return []
     try:
@@ -138,16 +133,14 @@ def get_active_parties_today():
     except: return []
 
 def load_data_from_sheets(target_event):
-    """Carrega dados da festa"""
     sheet = get_db_connection()
     if not sheet: return [], 100
-    
     try:
         data = sheet.get_all_records()
         cleaned = []
         today = get_brazil_time().strftime("%d/%m/%Y")
         target = str(target_event).strip().lower()
-        limit = 100 # Padrão
+        limit = 100 
 
         for row in data:
             evt = str(row.get('Evento', '')).strip().lower()
@@ -155,7 +148,6 @@ def load_data_from_sheets(target_event):
             
             if evt == target and dt == today:
                 if str(row.get('Status')) == "SYSTEM_START":
-                    # Recupera o limite salvo no marco inicial
                     try: limit = int(row.get('Idade', 100))
                     except: pass
                     continue
@@ -175,7 +167,6 @@ def load_data_from_sheets(target_event):
     except: return [], 100
 
 def save_row(row_data):
-    """Salva linha na planilha"""
     sheet = get_db_connection()
     if not sheet: return False
     try:
@@ -188,7 +179,6 @@ def save_row(row_data):
     except: return False
 
 def delete_row(guest_id):
-    """Deleta linha pelo ID"""
     sheet = get_db_connection()
     if not sheet: return False
     try:
@@ -200,7 +190,7 @@ def delete_row(guest_id):
     return False
 
 # ==========================================
-# 3. PDF (OTIMIZADO)
+# 3. PDF
 # ==========================================
 @st.cache_data(show_spinner=False)
 def generate_pdf(party_name, guests_df, p_counts, guest_limit):
@@ -311,7 +301,6 @@ def handle_add_guest():
         "Evento": st.session_state.name, "_is_paying": is_paying
     }
     
-    # Salva Nuvem -> Depois Memória
     if HAS_GSHEETS: save_row(new_guest)
     st.session_state.guests.insert(0, new_guest)
     st.session_state.last_time = datetime.now()
@@ -330,7 +319,6 @@ with st.sidebar:
     if not st.session_state.active:
         st.header("🎉 Iniciar / Entrar")
         
-        # Buscar Festas
         if st.button("🔄 Buscar Festas Hoje"): st.rerun()
         active = get_active_parties_today()
         
@@ -353,7 +341,6 @@ with st.sidebar:
             if not new_name: st.error("Nome obrigatório!")
             elif not get_db_connection(): st.error("Sem conexão!")
             else:
-                # Marco Inicial
                 marker = {
                     "id": "SYSTEM", "Nome": "--- START ---", "Tipo": "System",
                     "Idade": str(new_limit), "Status": "SYSTEM_START",
@@ -369,6 +356,31 @@ with st.sidebar:
     else:
         # Menu Festa Ativa
         st.header(f"🎈 {st.session_state.name}")
+        
+        # === ÁREA DE EXPORTAÇÃO (LIVRE) ===
+        st.markdown("### 📂 Relatórios")
+        df = pd.DataFrame(st.session_state.guests)
+        
+        # Cálculos Rápidos para o PDF
+        c_counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0}
+        if not df.empty:
+            c_counts['total'] = len(df)
+            c_counts['paying'] = df[df['_is_paying'] == True].shape[0]
+            c_counts['cortesia'] = df[df['Tipo'] == 'Cortesia'].shape[0]
+            c_counts['free'] = df[df['_is_paying'] == False].shape[0] - c_counts['cortesia']
+            
+            cols_drop = ['_is_paying', 'id']
+            pdf_data = generate_pdf(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns]), c_counts, st.session_state.limit)
+            
+            st.download_button("📄 Baixar PDF", pdf_data, "Relatorio.pdf", "application/pdf", use_container_width=True)
+            
+            msg = f"Relatório {st.session_state.name}: {c_counts['paying']} Pagantes. Total: {c_counts['total']}/{st.session_state.limit}"
+            st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
+        else:
+            st.info("Sem dados para exportar.")
+        # ==================================
+
+        st.divider()
         if st.button("🔄 Sincronizar"): sync_data()
         
         with st.expander("🗑️ Excluir (Senha)"):
@@ -414,7 +426,7 @@ if st.session_state.active:
     st.progress(pct)
     if counts['total'] >= st.session_state.limit: st.error("⚠️ LIMITE ATINGIDO!")
 
-    # Placar
+    # Placar (Estilo Antigo Colorido)
     c1, c2, c3 = st.columns(3)
     c1.markdown(f"<div class='metric-card card-purple'><div class='label'>Pagantes</div><div class='big-number'>{counts['paying']}</div></div>", unsafe_allow_html=True)
     c2.markdown(f"<div class='metric-card card-green'><div class='label'>Isentos (≤7)</div><div class='big-number'>{counts['free']}</div></div>", unsafe_allow_html=True)
@@ -422,7 +434,7 @@ if st.session_state.active:
     st.write("")
 
     # Abas
-    tab1, tab2 = st.tabs(["📍 Registro", "📊 Relatórios"])
+    tab1, tab2 = st.tabs(["📍 Registro", "📊 Gráficos (Admin)"])
     
     with tab1:
         with st.container(border=True):
@@ -461,17 +473,7 @@ if st.session_state.active:
                         st.plotly_chart(px.bar(counts_time, x='Horário', y='Chegadas', text='Chegadas'), use_container_width=True)
                     except: pass
                 
-                # Export
-                cols_drop = ['_is_paying', 'id']
-                export_df = df.drop(columns=[c for c in cols_drop if c in df.columns])
-                pdf_data = generate_pdf(st.session_state.name, df, counts, st.session_state.limit)
-                
-                c_pdf, c_zap = st.columns(2)
-                c_pdf.download_button("📄 PDF", pdf_data, "Relatorio.pdf", "application/pdf", use_container_width=True)
-                msg = f"Relatório {st.session_state.name}: {counts['paying']} Pagantes. Total: {counts['total']}/{st.session_state.limit}"
-                c_zap.link_button("📱 WhatsApp", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
-                
-                st.dataframe(export_df, use_container_width=True, hide_index=True)
+                st.dataframe(df.drop(columns=['_is_paying', 'id'], errors='ignore'), use_container_width=True, hide_index=True)
             else: st.info("Sem dados.")
         elif pwd: st.error("Senha errada")
 
