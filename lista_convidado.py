@@ -29,23 +29,16 @@ st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wi
 
 def get_db_connection():
     """Conecta ao Google Sheets"""
-    if not HAS_GSHEETS:
-        return None
+    if not HAS_GSHEETS: return None
     
     creds_dict = None
-    if "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-    elif "gsheets" in st.secrets:
-        creds_dict = dict(st.secrets["gsheets"])
+    if "gcp_service_account" in st.secrets: creds_dict = dict(st.secrets["gcp_service_account"])
+    elif "gsheets" in st.secrets: creds_dict = dict(st.secrets["gsheets"])
     
-    if not creds_dict:
-        return None
+    if not creds_dict: return None
 
     try:
-        scope = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         sheet = client.open(SHEET_NAME).sheet1
@@ -55,7 +48,7 @@ def get_db_connection():
         return None
 
 def load_data_from_sheets():
-    """Carrega dados e normaliza as chaves (ID -> id)"""
+    """Carrega dados e LIMPA colunas perigosas"""
     sheet = get_db_connection()
     if sheet:
         try:
@@ -63,19 +56,27 @@ def load_data_from_sheets():
             cleaned_data = []
             
             for row in data:
-                # Normalização de chaves
-                new_row = row.copy()
-                # Garante que 'id' existe, mesmo se a planilha tiver 'ID'
-                if 'ID' in row and 'id' not in row:
-                    new_row['id'] = str(row['ID']) # Força string aqui também
-                elif 'id' in row:
-                    new_row['id'] = str(row['id'])
+                # --- LIMPEZA CRÍTICA PARA EVITAR OVERFLOW ---
+                # Cria um novo dicionário LIMPO apenas com o que precisamos
+                # Se o ID vier do Sheets como número gigante, convertemos para string aqui
                 
-                # Garante status
-                status = new_row.get('Status', 'Pagante')
-                new_row['_is_paying'] = True if status == 'Pagante' else False
+                # 1. Tenta achar o ID em qualquer formato (ID ou id)
+                raw_id = row.get('id') or row.get('ID') or ''
+                safe_id = str(raw_id) # Converte para texto imediatamente
                 
-                cleaned_data.append(new_row)
+                clean_row = {
+                    'id': safe_id,
+                    'Nome': row.get('Nome', ''),
+                    'Tipo': row.get('Tipo', 'Adulto'),
+                    'Idade': row.get('Idade', '-'),
+                    'Status': row.get('Status', 'Pagante'),
+                    'Hora': row.get('Hora', '--:--')
+                }
+                
+                # 2. Recalcula status pagante
+                clean_row['_is_paying'] = True if clean_row['Status'] == 'Pagante' else False
+                
+                cleaned_data.append(clean_row)
                 
             return cleaned_data[::-1]
         except Exception as e:
@@ -87,8 +88,9 @@ def save_guest_to_sheets(guest_dict):
     sheet = get_db_connection()
     if sheet:
         try:
+            # Força conversão para string antes de enviar para evitar que o Sheets ache que é número
             row = [
-                str(guest_dict['id']), # Força string ao salvar
+                str(guest_dict['id']),
                 guest_dict['Nome'],
                 guest_dict['Tipo'],
                 guest_dict['Idade'],
@@ -130,7 +132,7 @@ def download_logo():
     return True
 
 @st.cache_data(show_spinner=False)
-def generate_pdf_report_v4(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
+def generate_pdf_report_v5(party_name, guests_df, total_paying, total_free, total_cortesia, total_guests, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     
@@ -267,7 +269,7 @@ def add_guest():
         is_paying = False
         status_label = "Cortesia"
 
-    # ID gerado como string explicitamente
+    # ID como String para evitar Overflow
     unique_id = str(datetime.now().strftime("%Y%m%d%H%M%S%f"))
     
     new_guest = {
@@ -299,11 +301,10 @@ def remove_guest_by_id(guest_id):
 # --- CÁLCULOS E CORREÇÃO DO OVERFLOW ---
 df = pd.DataFrame(st.session_state.guests)
 
-# --- A CORREÇÃO MÁGICA ESTÁ AQUI ---
-# Se o dataframe não estiver vazio, forçamos o ID a ser string
 if not df.empty:
-    if 'id' in df.columns:
-        df['id'] = df['id'].astype(str) # Isso previne o OverflowError
+    # GARANTIA FINAL: Converte TUDO que parecer ID para string antes de exibir
+    if 'id' in df.columns: df['id'] = df['id'].astype(str)
+    if 'ID' in df.columns: df['ID'] = df['ID'].astype(str)
     
     total_paying = df[df['_is_paying'] == True].shape[0]
     total_cortesia = df[df['Tipo'] == 'Cortesia'].shape[0]
@@ -340,6 +341,7 @@ with st.sidebar:
             for g in st.session_state.guests:
                 g_nome = g.get('Nome', 'Sem Nome')
                 g_hora = g.get('Hora', '--:--')
+                # Garante ID string aqui também
                 g_id = str(g.get('id', ''))
                 guest_options[f"{g_nome} ({g_hora})"] = g_id
             
@@ -364,11 +366,11 @@ with st.sidebar:
             fig_time.update_layout(margin=dict(t=10,b=10,l=10,r=10), height=150, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(255,255,255,0.1)', font_color="white")
             st.plotly_chart(fig_time, use_container_width=True)
 
-        cols_to_drop = ['_is_paying', 'id']
-        # Garante que remove 'id' antes de exibir para evitar ver o número gigante feio
+        # Remove colunas internas e qualquer coluna que pareça ID para exibição
+        cols_to_drop = ['_is_paying', 'id', 'ID']
         export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns])
         
-        pdf_bytes = generate_pdf_report_v4(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
+        pdf_bytes = generate_pdf_report_v5(party_name, export_df, total_paying, total_free, total_cortesia, total_guests, guest_limit)
         
         st.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="lista.pdf", mime="application/pdf")
         msg = f"Resumo {party_name}: {total_paying} Pagantes. Total: {total_guests}/{guest_limit}."
