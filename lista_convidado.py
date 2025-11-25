@@ -16,7 +16,7 @@ st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wi
 # Configurações Globais
 LOGO_URL = "https://lanbele.com.br/wp-content/uploads/2025/09/IMG-20250920-WA0029-1024x585.png"
 LOGO_PATH = "logo_cache.png"
-SENHA_ADMIN = "140206"
+SENHA_ADMIN = "1234"
 SHEET_NAME = "Controle_Buffet"
 
 # Imports Condicionais (Google Sheets)
