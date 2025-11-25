@@ -9,9 +9,14 @@ import pytz
 import time
 
 # ==========================================
-# CONFIGURAÇÃO INICIAL
+# CONFIGURAÇÃO INICIAL (OTIMIZADA)
 # ==========================================
-st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wide")
+st.set_page_config(
+    page_title="Controle de Buffet", 
+    page_icon="⚡", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # Configurações Globais
 LOGO_URL = "https://lanbele.com.br/wp-content/uploads/2025/09/IMG-20250920-WA0029-1024x585.png"
@@ -28,146 +33,142 @@ except ImportError:
     HAS_GSHEETS = False
 
 # ==========================================
-# 1. UTILITÁRIOS E CSS
+# 1. UTILITÁRIOS DE ALTA PERFORMANCE
 # ==========================================
 
 def get_brazil_time():
-    """Retorna data/hora atual de SP"""
+    """Retorna data/hora atual de SP com alta precisão"""
     return datetime.now(pytz.timezone('America/Sao_Paulo'))
 
 @st.cache_resource
 def download_logo():
-    """Baixa o logo apenas uma vez (Cache)"""
+    """Baixa o logo apenas uma vez e mantém em cache eterno"""
     if not os.path.exists(LOGO_PATH):
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.get(LOGO_URL, headers=headers, timeout=5)
+            response = requests.get(LOGO_URL, headers=headers, timeout=2)
             if response.status_code == 200:
                 with open(LOGO_PATH, "wb") as f: f.write(response.content)
         except: pass
 
-# Estilo Visual (Cartões Coloridos + Fundo Unificado)
-st.markdown("""
-    <style>
-    /* Fundo Principal */
-    .stApp { background-color: #2e003e; color: white; }
-    
-    /* Barra Lateral na mesma cor */
-    section[data-testid="stSidebar"] { 
-        background-color: #2e003e; 
-        border-right: 1px solid rgba(255,255,255,0.1);
-    }
-    
-    /* Inputs */
-    input, .stNumberInput input { 
-        color: white !important; 
-        font-weight: bold; 
-        background-color: rgba(255, 255, 255, 0.15) !important;
-    }
-    
-    div[data-baseweb="input"] {
-        border: 1px solid rgba(255,255,255,0.3);
-        border-radius: 8px;
-    }
-
-    /* Cartões de Métricas (Estilo Original Colorido) */
-    .metric-card {
-        padding: 15px;
-        border-radius: 12px;
-        text-align: center;
-        box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
-        margin-bottom: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-        color: white;
-    }
-    .card-purple { background: linear-gradient(135deg, #6a1b9a, #4a148c); }
-    .card-green { background: linear-gradient(135deg, #43a047, #2e7d32); }
-    .card-orange { background: linear-gradient(135deg, #fb8c00, #ef6c00); }
-    
-    .big-number { font-size: 2.8em; font-weight: bold; margin: 0; text-shadow: 1px 1px 3px rgba(0,0,0,0.5); }
-    .label { font-size: 0.9em; font-weight: 500; text-transform: uppercase; opacity: 0.9; }
-    
-    /* Botões */
-    div.stButton > button { 
-        width: 100%; 
-        border-radius: 8px; 
-        height: 3em; 
-        font-weight: bold; 
-        border: none;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 # ==========================================
-# 2. CONEXÃO E DADOS (BACKEND)
+# 2. CONEXÃO COM GOOGLE SHEETS (CACHEADA)
 # ==========================================
 
-def get_db_connection():
+@st.cache_resource(ttl=3600) # Mantém a conexão aberta por 1 hora
+def get_cached_client():
+    """Cria a conexão com o Google e armazena em cache"""
     if not HAS_GSHEETS: return None
+    
     creds_dict = None
     if "gcp_service_account" in st.secrets: creds_dict = dict(st.secrets["gcp_service_account"])
     elif "gsheets" in st.secrets: creds_dict = dict(st.secrets["gsheets"])
+    
     if not creds_dict: return None
+
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
-        return client.open(SHEET_NAME).sheet1
-    except Exception: return None
+        return client
+    except: return None
+
+def get_sheet_instance():
+    """Obtém a planilha usando o cliente cacheado"""
+    client = get_cached_client()
+    if client:
+        try: return client.open(SHEET_NAME).sheet1
+        except: return None
+    return None
 
 def check_and_init_headers():
-    sheet = get_db_connection()
+    """Verificação rápida de integridade"""
+    sheet = get_sheet_instance()
     if not sheet: return
     try:
+        # Lê apenas a primeira linha (muito rápido)
         if not sheet.row_values(1):
             sheet.append_row(["id", "Nome", "Tipo", "Idade", "Status", "Hora", "Data", "Evento"])
     except: pass
 
+# ==========================================
+# 3. MANIPULAÇÃO DE DADOS (OTIMIZADA)
+# ==========================================
+
 def get_active_parties_today():
-    sheet = get_db_connection()
+    """Busca festas hoje usando Pandas para velocidade"""
+    sheet = get_sheet_instance()
     if not sheet: return []
     try:
         data = sheet.get_all_records()
-        today = get_brazil_time().strftime("%d/%m/%Y")
-        return list({str(r.get('Evento','')).strip() for r in data if str(r.get('Data','')).strip() == today and str(r.get('Evento','')).strip()})
+        if not data: return []
+        
+        df = pd.DataFrame(data)
+        # Limpeza rápida de espaços
+        if 'Data' in df.columns and 'Evento' in df.columns:
+            today = get_brazil_time().strftime("%d/%m/%Y")
+            # Filtro vetorial (muito mais rápido que loop)
+            active = df[df['Data'].astype(str).str.strip() == today]['Evento'].unique()
+            return [x for x in active if x.strip()]
+        return []
     except: return []
 
-def load_data_from_sheets(target_event):
-    sheet = get_db_connection()
+def load_data_optimized(target_event):
+    """Carrega e filtra dados da festa usando Pandas"""
+    sheet = get_sheet_instance()
     if not sheet: return [], 100
+    
     try:
-        data = sheet.get_all_records()
-        cleaned = []
+        raw_data = sheet.get_all_records()
+        if not raw_data: return [], 100
+        
+        df = pd.DataFrame(raw_data)
+        
+        # Normalização de Colunas (Case Insensitive)
+        df.columns = [c.strip() for c in df.columns]
+        
+        # Garante colunas essenciais
+        required = ['Evento', 'Data', 'Status', 'Nome', 'Tipo', 'Idade', 'Hora']
+        for col in required:
+            if col not in df.columns: df[col] = ''
+            
+        # Filtros
         today = get_brazil_time().strftime("%d/%m/%Y")
         target = str(target_event).strip().lower()
-        limit = 100 
-
-        for row in data:
-            evt = str(row.get('Evento', '')).strip().lower()
-            dt = str(row.get('Data', '')).strip()
+        
+        # Cria máscaras booleanas (Rápido)
+        mask_event = df['Evento'].astype(str).str.strip().str.lower() == target
+        mask_date = df['Data'].astype(str).str.strip() == today
+        
+        df_filtered = df[mask_event & mask_date].copy()
+        
+        # Extrai limite se existir
+        limit = 100
+        system_row = df_filtered[df_filtered['Status'] == 'SYSTEM_START']
+        if not system_row.empty:
+            try: limit = int(system_row.iloc[0]['Idade'])
+            except: pass
             
-            if evt == target and dt == today:
-                if str(row.get('Status')) == "SYSTEM_START":
-                    try: limit = int(row.get('Idade', 100))
-                    except: pass
-                    continue
+        # Remove linhas de sistema dos convidados
+        df_guests = df_filtered[df_filtered['Status'] != 'SYSTEM_START'].copy()
+        
+        # Tratamento de ID (Evita Overflow)
+        if 'id' in df_guests.columns: df_guests['id'] = df_guests['id'].astype(str)
+        elif 'ID' in df_guests.columns: df_guests['id'] = df_guests['ID'].astype(str)
+        else: df_guests['id'] = ''
 
-                cleaned.append({
-                    'id': str(row.get('id') or row.get('ID') or ''),
-                    'Nome': row.get('Nome', ''),
-                    'Tipo': row.get('Tipo', 'Adulto'),
-                    'Idade': row.get('Idade', '-'),
-                    'Status': row.get('Status', 'Pagante'),
-                    'Hora': row.get('Hora', '--:--'),
-                    'Data': dt,
-                    'Evento': row.get('Evento', ''),
-                    '_is_paying': True if row.get('Status') == 'Pagante' else False
-                })
-        return cleaned[::-1], limit
-    except: return [], 100
+        # Adiciona flag de pagante
+        df_guests['_is_paying'] = df_guests['Status'] == 'Pagante'
+        
+        # Retorna como lista de dicionários (compatível com o resto do código)
+        return df_guests.to_dict('records')[::-1], limit
+        
+    except Exception as e:
+        return [], 100
 
-def save_row(row_data):
-    sheet = get_db_connection()
+def save_row_optimized(row_data):
+    """Salva na nuvem"""
+    sheet = get_sheet_instance()
     if not sheet: return False
     try:
         sheet.append_row([
@@ -178,8 +179,9 @@ def save_row(row_data):
         return True
     except: return False
 
-def delete_row(guest_id):
-    sheet = get_db_connection()
+def delete_row_optimized(guest_id):
+    """Deleta linha"""
+    sheet = get_sheet_instance()
     if not sheet: return False
     try:
         cell = sheet.find(str(guest_id))
@@ -190,10 +192,10 @@ def delete_row(guest_id):
     return False
 
 # ==========================================
-# 3. PDF
+# 4. RELATÓRIOS (PDF CACHEADO)
 # ==========================================
 @st.cache_data(show_spinner=False)
-def generate_pdf(party_name, guests_df, p_counts, guest_limit):
+def generate_pdf_v_final(party_name, guests_df, p_counts, guest_limit):
     pdf = FPDF()
     pdf.add_page()
     if os.path.exists(LOGO_PATH):
@@ -238,6 +240,7 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
         if fill: pdf.set_fill_color(240, 240, 245)
         else: pdf.set_fill_color(255, 255, 255)
         try:
+            # Conversão segura para evitar erros de caracteres
             vals = [str(row.get(c,'-')).encode('latin-1', 'replace').decode('latin-1') for c in ['Nome', 'Tipo', 'Idade', 'Status', 'Hora']]
         except: vals = ["-"] * 5
         
@@ -250,22 +253,72 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     except: return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# 4. LÓGICA DE APLICAÇÃO
+# 5. INTERFACE E LÓGICA (FRONTEND)
 # ==========================================
+
+# CSS Otimizado e Cartões Originais
+st.markdown("""
+    <style>
+    /* Fundo Principal */
+    .stApp { background-color: #2e003e; color: white; }
+    
+    /* Barra Lateral na mesma cor */
+    section[data-testid="stSidebar"] { 
+        background-color: #2e003e; 
+        border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    /* Inputs com contraste */
+    input, .stNumberInput input { 
+        color: white !important; 
+        font-weight: bold; 
+        background-color: rgba(255, 255, 255, 0.15) !important;
+    }
+    div[data-baseweb="input"] {
+        border: 1px solid rgba(255,255,255,0.3);
+        border-radius: 8px;
+    }
+
+    /* Cartões de Métricas (Estilo Original Colorido) */
+    .metric-card {
+        padding: 15px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
+        margin-bottom: 10px;
+        border: 1px solid rgba(255,255,255,0.1);
+        color: white;
+    }
+    .card-purple { background: linear-gradient(135deg, #6a1b9a, #4a148c); }
+    .card-green { background: linear-gradient(135deg, #43a047, #2e7d32); }
+    .card-orange { background: linear-gradient(135deg, #fb8c00, #ef6c00); }
+    
+    .big-number { font-size: 2.8em; font-weight: bold; margin: 0; text-shadow: 1px 1px 3px rgba(0,0,0,0.5); }
+    .label { font-size: 0.9em; font-weight: 500; text-transform: uppercase; opacity: 0.9; }
+    
+    /* Botões */
+    div.stButton > button { 
+        width: 100%; 
+        border-radius: 8px; 
+        height: 3em; 
+        font-weight: bold; 
+        border: none;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 download_logo()
 if HAS_GSHEETS: check_and_init_headers()
 
-# Init Session
+# Init Session State
 defaults = {'active': False, 'name': '', 'limit': 100, 'guests': [], 'last_time': None}
 for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
 def sync_data():
-    """Sincroniza tudo"""
     if st.session_state.active and HAS_GSHEETS:
         with st.spinner("Sincronizando..."):
-            guests, limit = load_data_from_sheets(st.session_state.name)
+            guests, limit = load_data_optimized(st.session_state.name)
             st.session_state.guests = guests
             st.session_state.limit = limit
 
@@ -277,13 +330,13 @@ def handle_add_guest():
     if not name: return st.warning("Nome vazio!")
     if gtype == "Criança" and age == 0: return st.warning("Idade vazia!")
 
-    # Anti-duplicação
+    # Anti-duplicação (5s)
     if st.session_state.guests and st.session_state.last_time:
         last = st.session_state.guests[0]
         if last['Nome'] == name and (datetime.now() - st.session_state.last_time).total_seconds() < 5:
             return st.toast("⚠️ Duplicado evitado!")
 
-    # Regras
+    # Regras de Negócio
     is_paying = True
     status = "Pagante"
     age_str = "-"
@@ -297,29 +350,30 @@ def handle_add_guest():
     new_guest = {
         "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
         "Nome": name, "Tipo": gtype, "Idade": age_str, "Status": status,
-        "Hora": get_brazil_time().strftime("%H:%M"), "Data": get_brazil_time().strftime("%d/%m/%Y"),
-        "Evento": st.session_state.name, "_is_paying": is_paying
+        "Hora": get_brazil_time().strftime("%H:%M"), 
+        "Data": get_brazil_time().strftime("%d/%m/%Y"),
+        "Evento": st.session_state.name, 
+        "_is_paying": is_paying
     }
     
-    if HAS_GSHEETS: save_row(new_guest)
+    # Salva na Nuvem (Se falhar, avisa, mas tenta não travar o app)
+    if HAS_GSHEETS: 
+        if not save_row_optimized(new_guest):
+            st.error("Erro ao salvar na nuvem!")
+            
     st.session_state.guests.insert(0, new_guest)
     st.session_state.last_time = datetime.now()
     st.session_state.temp_name = ""
     st.success(f"✅ {name} Adicionado!")
 
-# ==========================================
-# 5. INTERFACE
-# ==========================================
-
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL (MENU) ---
 with st.sidebar:
-    status_color = "🟢" if get_db_connection() else "🔴"
+    status_color = "🟢" if get_sheet_instance() else "🔴" # Testa conexão real
     st.caption(f"{status_color} Conexão: {'Online' if '🟢' in status_color else 'Offline'}")
 
     if not st.session_state.active:
         st.header("🎉 Iniciar / Entrar")
         
-        # Buscar Festas
         if st.button("🔄 Buscar Festas Hoje"): st.rerun()
         active = get_active_parties_today()
         
@@ -340,30 +394,27 @@ with st.sidebar:
         
         if st.button("🚀 Criar Nova"):
             if not new_name: st.error("Nome obrigatório!")
-            elif not get_db_connection(): st.error("Sem conexão!")
+            elif not get_sheet_instance(): st.error("Sem conexão!")
             else:
-                # Marco Inicial
                 marker = {
                     "id": "SYSTEM", "Nome": "--- START ---", "Tipo": "System",
                     "Idade": str(new_limit), "Status": "SYSTEM_START",
                     "Hora": get_brazil_time().strftime("%H:%M"), "Data": get_brazil_time().strftime("%d/%m/%Y"),
                     "Evento": new_name.strip()
                 }
-                save_row(marker)
+                save_row_optimized(marker)
                 st.session_state.name = new_name
                 st.session_state.limit = new_limit
                 st.session_state.active = True
                 st.session_state.guests = []
                 st.rerun()
     else:
-        # Menu Festa Ativa
         st.header(f"🎈 {st.session_state.name}")
         
-        # === ÁREA DE EXPORTAÇÃO (LIVRE) ===
+        # Exportação (Livre)
         st.markdown("### 📂 Relatórios")
         df = pd.DataFrame(st.session_state.guests)
         
-        # Cálculos Rápidos para o PDF
         c_counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0}
         if not df.empty:
             c_counts['total'] = len(df)
@@ -372,15 +423,15 @@ with st.sidebar:
             c_counts['free'] = df[df['_is_paying'] == False].shape[0] - c_counts['cortesia']
             
             cols_drop = ['_is_paying', 'id']
-            pdf_data = generate_pdf(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns]), c_counts, st.session_state.limit)
+            # Passa Dataframe limpo para PDF
+            pdf_data = generate_pdf_v_final(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore'), c_counts, st.session_state.limit)
             
             st.download_button("📄 Baixar PDF", pdf_data, "Relatorio.pdf", "application/pdf", use_container_width=True)
             
             msg = f"Relatório {st.session_state.name}: {c_counts['paying']} Pagantes. Total: {c_counts['total']}/{st.session_state.limit}"
             st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
         else:
-            st.info("Sem dados para exportar.")
-        # ==================================
+            st.info("Sem dados.")
 
         st.divider()
         if st.button("🔄 Sincronizar"): sync_data()
@@ -392,7 +443,7 @@ with st.sidebar:
                 pwd = st.text_input("Senha", type="password")
                 if st.button("Confirmar Exclusão"):
                     if pwd == SENHA_ADMIN:
-                        delete_row(opts[sel_del])
+                        delete_row_optimized(opts[sel_del])
                         st.session_state.guests = [g for g in st.session_state.guests if g['id'] != opts[sel_del]]
                         st.success("Deletado!")
                         st.rerun()
@@ -409,33 +460,28 @@ with c2:
     if os.path.exists(LOGO_PATH): st.image(LOGO_PATH, use_container_width=True)
 
 if st.session_state.active:
-    # Cálculos
+    # Recalcula contagens para exibir no placar
     df = pd.DataFrame(st.session_state.guests)
     counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0}
-    
     if not df.empty:
         counts['total'] = len(df)
         counts['paying'] = df[df['_is_paying'] == True].shape[0]
         counts['cortesia'] = df[df['Tipo'] == 'Cortesia'].shape[0]
         counts['free'] = df[df['_is_paying'] == False].shape[0] - counts['cortesia']
 
-    # Header
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.name}</h2>", unsafe_allow_html=True)
     
-    # Barra Lotação
     pct = min(counts['total'] / st.session_state.limit, 1.0)
     st.write(f"**Lotação:** {counts['total']} / {st.session_state.limit}")
     st.progress(pct)
     if counts['total'] >= st.session_state.limit: st.error("⚠️ LIMITE ATINGIDO!")
 
-    # Placar (Estilo Antigo Colorido)
     c1, c2, c3 = st.columns(3)
     c1.markdown(f"<div class='metric-card card-purple'><div class='label'>Pagantes</div><div class='big-number'>{counts['paying']}</div></div>", unsafe_allow_html=True)
     c2.markdown(f"<div class='metric-card card-green'><div class='label'>Isentos (≤7)</div><div class='big-number'>{counts['free']}</div></div>", unsafe_allow_html=True)
     c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Cortesias</div><div class='big-number'>{counts['cortesia']}</div></div>", unsafe_allow_html=True)
     st.write("")
 
-    # Abas
     tab1, tab2 = st.tabs(["📍 Registro", "📊 Gráficos (Admin)"])
     
     with tab1:
@@ -457,39 +503,28 @@ if st.session_state.active:
                 if st.session_state.guests:
                     if st.button("↩️ Desfazer"):
                         last = st.session_state.guests.pop(0)
-                        if HAS_GSHEETS: delete_row(last['id'])
+                        if HAS_GSHEETS: delete_row_optimized(last['id'])
                         st.rerun()
 
     with tab2:
         pwd = st.text_input("Senha Admin", type="password", key="report_pass")
         if pwd == SENHA_ADMIN:
             if not df.empty:
-                # Gráfico Robusto
                 if 'Hora' in df.columns:
                     try:
-                        chart_df = df.copy()
-                        # Garante string e corta para HH:MM independente de segundos
-                        chart_df['Hora'] = chart_df['Hora'].astype(str).apply(lambda x: x[:5])
-                        
-                        chart_df['dt'] = pd.to_datetime(chart_df['Hora'], format='%H:%M').apply(
-                            lambda x: x.replace(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
-                        )
-                        chart_df['15min'] = chart_df['dt'].dt.floor('15T')
-                        counts_time = chart_df['15min'].value_counts().sort_index().reset_index()
+                        # Correção para garantir string antes de cortar
+                        df['HoraStr'] = df['Hora'].astype(str).apply(lambda x: x[:5])
+                        df['dt'] = pd.to_datetime(df['HoraStr'], format='%H:%M').apply(lambda x: x.replace(year=2024))
+                        df['15min'] = df['dt'].dt.floor('15T')
+                        counts_time = df['15min'].value_counts().sort_index().reset_index()
                         counts_time.columns = ['Horário', 'Chegadas']
                         counts_time['Horário'] = counts_time['Horário'].dt.strftime('%H:%M')
                         
                         fig = px.bar(counts_time, x='Horário', y='Chegadas', text='Chegadas')
                         fig.update_traces(textposition='outside', marker_color='#fb8c00')
-                        fig.update_layout(
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            font_color="white",
-                            height=300
-                        )
+                        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color="white", height=300)
                         st.plotly_chart(fig, use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Erro no gráfico: {e}")
+                    except: st.info("Gráfico indisponível.")
                 
                 st.dataframe(df.drop(columns=['_is_paying', 'id'], errors='ignore'), use_container_width=True, hide_index=True)
             else: st.info("Sem dados.")
