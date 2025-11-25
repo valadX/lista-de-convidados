@@ -454,6 +454,17 @@ if st.session_state.active:
                         last = st.session_state.guests.pop(0)
                         if HAS_GSHEETS: delete_row(last['id'])
                         st.rerun()
+            
+            # ÁREA NOVA: ÚLTIMOS 5 REGISTROS
+            if st.session_state.guests:
+                st.markdown("---")
+                st.caption("📝 Últimos 5 Adicionados:")
+                recent_df = pd.DataFrame(st.session_state.guests[:5])
+                st.dataframe(
+                    recent_df[['Nome', 'Tipo', 'Status', 'Hora']], 
+                    use_container_width=True, 
+                    hide_index=True
+                )
 
     with tab2:
         pwd = st.text_input("Senha Admin", type="password", key="report_pass")
@@ -462,9 +473,7 @@ if st.session_state.active:
                 # Gráfico
                 if 'Hora' in df.columns:
                     try:
-                        # Correção para garantir string antes de cortar
-                        df['HoraStr'] = df['Hora'].astype(str).apply(lambda x: x[:5])
-                        df['dt'] = pd.to_datetime(df['HoraStr'], format='%H:%M').apply(lambda x: x.replace(year=2024))
+                        df['dt'] = pd.to_datetime(df['Hora'], format='%H:%M').apply(lambda x: x.replace(year=2024))
                         df['15min'] = df['dt'].dt.floor('15T')
                         counts_time = df['15min'].value_counts().sort_index().reset_index()
                         counts_time.columns = ['Horário', 'Chegadas']
