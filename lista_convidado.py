@@ -337,7 +337,8 @@ with st.sidebar:
         st.markdown("---")
         st.markdown("**Nova Festa:**")
         new_name = st.text_input("Nome do Evento", placeholder="Ex: Maria 15 Anos")
-        new_limit = st.number_input("Limite Contrato", 100, 500, 100, 5)
+        # ALTERAÇÃO: Campo de limite livre (min=0, sem max, step=1)
+        new_limit = st.number_input("Limite Contrato", min_value=0, value=100, step=1)
         
         if st.button("🚀 Criar Nova"):
             if not new_name: st.error("Nome obrigatório!")
@@ -420,7 +421,10 @@ if st.session_state.active:
 
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.name}</h2>", unsafe_allow_html=True)
     
-    pct = min(counts['total'] / st.session_state.limit, 1.0)
+    # Tratamento para divisão por zero
+    limit_val = st.session_state.limit if st.session_state.limit > 0 else 1
+    pct = min(counts['total'] / limit_val, 1.0)
+    
     st.write(f"**Lotação:** {counts['total']} / {st.session_state.limit}")
     st.progress(pct)
     if counts['total'] >= st.session_state.limit: st.error("⚠️ LIMITE ATINGIDO!")
@@ -473,7 +477,9 @@ if st.session_state.active:
                 # Gráfico
                 if 'Hora' in df.columns:
                     try:
-                        df['dt'] = pd.to_datetime(df['Hora'], format='%H:%M').apply(lambda x: x.replace(year=2024))
+                        # Correção para garantir string antes de cortar
+                        df['HoraStr'] = df['Hora'].astype(str).apply(lambda x: x[:5])
+                        df['dt'] = pd.to_datetime(df['HoraStr'], format='%H:%M').apply(lambda x: x.replace(year=2024))
                         df['15min'] = df['dt'].dt.floor('15T')
                         counts_time = df['15min'].value_counts().sort_index().reset_index()
                         counts_time.columns = ['Horário', 'Chegadas']
