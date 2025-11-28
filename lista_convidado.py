@@ -7,7 +7,7 @@ import os
 import plotly.express as px
 import pytz
 import time
-import re  # Importando biblioteca para achar números no texto
+import re
 
 # ==========================================
 # CONFIGURAÇÃO INICIAL
@@ -45,7 +45,6 @@ def download_logo():
                 with open(LOGO_PATH, "wb") as f: f.write(response.content)
         except: pass
 
-# CSS
 st.markdown("""
     <style>
     .stApp { background-color: #2e003e; color: white; }
@@ -55,10 +54,8 @@ st.markdown("""
         font-weight: bold; 
         background-color: #ffffff !important;
     }
-    
     div[data-baseweb="input"] {
         background-color: #ffffff !important;
-        border: 1px solid #cccccc;
         border-radius: 8px;
     }
 
@@ -172,38 +169,43 @@ def delete_row(guest_id):
     return False
 
 # ==========================================
-# 3. LÓGICA INTELIGENTE (SMART PARSER)
+# 3. SMART PARSER (LÓGICA INTELIGENTE)
 # ==========================================
 
 def parse_input_text(text):
-    """Lê o texto e decide se é Adulto, Criança ou Cortesia"""
+    """
+    Interpreta o texto digitado:
+    - Se tem número: Criança (idade)
+    - Se tem 'mãe', 'pai', etc: Cortesia
+    - Padrão: Adulto
+    """
     text = text.strip()
+    if not text: return None
+    
+    # Normaliza para busca
     lower_text = text.lower()
     
-    # 1. Verifica Palavras-Chave de Cortesia
-    keywords_cortesia = ['mãe', 'pai', 'mae', 'irmao', 'irmão', 'irmã', 'irma', 'fotografo', 'fotógrafo', 'staff', 'baba', 'babá', 'avó', 'avô', 'cortesia']
+    # 1. Palavras-Chave de Cortesia (Verifica palavra exata para evitar 'Ismael' virar 'Mae')
+    keywords = ['mãe', 'mae', 'pai', 'irmao', 'irmão', 'irma', 'irmã', 'fotografo', 'fotógrafo', 'staff', 'baba', 'babá', 'avó', 'avô', 'cortesia']
+    words = lower_text.replace(',', ' ').replace('-', ' ').split()
     
-    # Verifica se alguma palavra inteira bate (evita pegar 'maercio' como 'mae')
-    for kw in keywords_cortesia:
-        if kw in lower_text:
-            return {
-                "Nome": text.title(),
-                "Tipo": "Cortesia",
-                "Idade": "-",
-                "Status": "Cortesia",
-                "_is_paying": False
-            }
+    if any(k in words for k in keywords):
+        return {
+            "Nome": text.title(),
+            "Tipo": "Cortesia",
+            "Idade": "-",
+            "Status": "Cortesia",
+            "_is_paying": False
+        }
 
-    # 2. Verifica se tem NÚMERO (Idade de Criança)
-    # Procura número no texto (ex: "Helena 6", "6 anos", "Joao 10")
+    # 2. Verifica Número (Idade)
     match = re.search(r'(\d+)', text)
     if match:
         age = int(match.group(1))
-        # Remove o número do nome para ficar bonito
-        clean_name = re.sub(r'\d+\s*(anos|ano)?', '', text, flags=re.IGNORECASE).strip()
+        # Remove o número do nome para limpar
+        clean_name = re.sub(r'\d+\s*(anos|ano|a)?', '', text, flags=re.IGNORECASE).strip()
         if not clean_name: clean_name = "Criança"
         
-        # Regra: <= 7 isento, > 7 pagante
         status = "Isento" if age <= 7 else "Pagante"
         is_paying = (age > 7)
         
@@ -215,7 +217,7 @@ def parse_input_text(text):
             "_is_paying": is_paying
         }
 
-    # 3. Padrão: Adulto Pagante
+    # 3. Padrão: Adulto
     return {
         "Nome": text.title(),
         "Tipo": "Adulto",
@@ -302,36 +304,32 @@ def sync_data():
 
 def handle_add_guest_smart():
     raw_text = st.session_state.smart_input
-    if not raw_text: return st.warning("Digite algo!")
-
-    # Usa o parser inteligente
-    parsed = parse_input_text(raw_text)
+    if not raw_text: return
     
-    # Anti-duplicação
+    parsed = parse_input_text(raw_text)
+    if not parsed: return
+
+    # Anti-duplicação (5s)
     if st.session_state.guests and st.session_state.last_time:
         last = st.session_state.guests[0]
         if last['Nome'] == parsed['Nome'] and (datetime.now() - st.session_state.last_time).total_seconds() < 5:
-            return st.toast("⚠️ Duplicado evitado!")
+            st.toast(f"⚠️ {parsed['Nome']} duplicado evitado!")
+            st.session_state.smart_input = ""
+            return
 
     new_guest = {
         "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
-        "Nome": parsed['Nome'], 
-        "Tipo": parsed['Tipo'], 
-        "Idade": parsed['Idade'], 
-        "Status": parsed['Status'],
-        "Hora": get_brazil_time().strftime("%H:%M"), 
-        "Data": get_brazil_time().strftime("%d/%m/%Y"),
-        "Evento": st.session_state.name, 
-        "_is_paying": parsed['_is_paying']
+        "Nome": parsed['Nome'], "Tipo": parsed['Tipo'], 
+        "Idade": parsed['Idade'], "Status": parsed['Status'],
+        "Hora": get_brazil_time().strftime("%H:%M"), "Data": get_brazil_time().strftime("%d/%m/%Y"),
+        "Evento": st.session_state.name, "_is_paying": parsed['_is_paying']
     }
     
     if HAS_GSHEETS: save_row(new_guest)
     st.session_state.guests.insert(0, new_guest)
     st.session_state.last_time = datetime.now()
-    st.session_state.smart_input = "" # Limpa o campo
-    
-    # Feedback visual do que aconteceu
-    st.toast(f"✅ {parsed['Nome']} ({parsed['Status']})")
+    st.session_state.smart_input = "" 
+    st.toast(f"✅ {parsed['Nome']} ({parsed['Tipo']}) adicionado!")
 
 # ==========================================
 # 6. INTERFACE
@@ -392,6 +390,7 @@ with st.sidebar:
             pdf_data = generate_pdf(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore'), c_counts, st.session_state.limit)
             
             st.download_button("📄 Baixar PDF", pdf_data, "Relatorio.pdf", "application/pdf", use_container_width=True)
+            
             msg = f"Relatório {st.session_state.name}: {c_counts['paying']} Pagantes. Total: {c_counts['total']}/{st.session_state.limit}"
             st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
         else: st.info("Sem dados.")
@@ -444,38 +443,44 @@ if st.session_state.active:
     c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Cortesias</div><div class='big-number'>{counts['cortesia']}</div></div>", unsafe_allow_html=True)
     st.write("")
 
-    tab1, tab2 = st.tabs(["📍 Registro Inteligente", "📊 Gráficos (Admin)"])
-    
-    with tab1:
-        with st.container(border=True):
-            st.subheader("Digite Nome ou Comando")
-            st.info("Exemplos: 'Carlos' (Adulto), 'Helena 6' (Criança 6 anos), 'Maria Mãe' (Cortesia)")
+    # --- CAMPO INTELIGENTE ---
+    with st.container(border=True):
+        st.subheader("Digite Nome ou Comando")
+        st.caption("Ex: 'Carlos' (Adulto), 'Helena 6' (Criança 6), 'Maria Mãe' (Cortesia)")
+        
+        # CAMPO DE ENTRADA ÚNICO
+        st.text_input("", placeholder="Digite aqui e aperte Enter...", key="smart_input", on_change=handle_add_guest_smart)
+        
+        st.write("")
+        if st.session_state.guests:
+            if st.button("↩️ Desfazer Último"):
+                last = st.session_state.guests.pop(0)
+                if HAS_GSHEETS: delete_row(last['id'])
+                st.rerun()
             
-            # CAMPO DE ENTRADA ÚNICO E INTELIGENTE
-            # on_change dispara assim que aperta Enter
-            st.text_input("", placeholder="Digite aqui...", key="smart_input", on_change=handle_add_guest_smart)
-            
-            # Botão extra caso prefira clicar
-            if st.button("Confirmar", type="primary"):
-                handle_add_guest_smart()
-            
-            st.write("")
-            if st.session_state.guests:
-                if st.button("↩️ Desfazer Último"):
-                    last = st.session_state.guests.pop(0)
-                    if HAS_GSHEETS: delete_row(last['id'])
-                    st.rerun()
-                
-                st.markdown("---")
-                st.caption("📝 Últimos adicionados:")
-                recent_df = pd.DataFrame(st.session_state.guests[:5])
+            st.markdown("---")
+            st.write("📝 **Últimos 5 Registros:**")
+            recent_df = pd.DataFrame(st.session_state.guests[:5])
+            if not recent_df.empty:
                 st.dataframe(
-                    recent_df[['Nome', 'Tipo', 'Status', 'Hora']], 
+                    recent_df[['Nome', 'Tipo', 'Idade', 'Status', 'Hora']], 
                     use_container_width=True, 
                     hide_index=True
                 )
 
-    with tab2:
+    with st.expander("🛠️ Opções Manuais (Caso a inteligência erre)"):
+        st.text_input("Nome Manual", key="temp_name")
+        c1, c2 = st.columns(2)
+        with c1: st.radio("Tipo", ["Adulto", "Criança", "Cortesia"], horizontal=True, key="temp_type")
+        with c2: st.number_input("Idade", 0, 18, 1, key="temp_age")
+        
+        def handle_manual():
+            st.session_state.smart_input = f"{st.session_state.temp_name} {st.session_state.temp_age if st.session_state.temp_type == 'Criança' else ''} {st.session_state.temp_type if st.session_state.temp_type == 'Cortesia' else ''}"
+            handle_add_guest_smart()
+            
+        st.button("Adicionar Manualmente", on_click=handle_manual)
+
+    with st.expander("📊 Gráficos (Admin)"):
         pwd = st.text_input("Senha Admin", type="password", key="report_pass")
         if pwd == SENHA_ADMIN:
             if not df.empty:
@@ -486,12 +491,8 @@ if st.session_state.active:
                         counts_time = df['15min'].value_counts().sort_index().reset_index()
                         counts_time.columns = ['Horário', 'Chegadas']
                         counts_time['Horário'] = counts_time['Horário'].dt.strftime('%H:%M')
-                        
-                        fig = px.bar(counts_time, x='Horário', y='Chegadas', text='Chegadas')
-                        fig.update_traces(textposition='outside', marker_color='#fb8c00')
-                        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font_color="white", height=300)
-                        st.plotly_chart(fig, use_container_width=True)
-                    except: st.info("Gráfico indisponível.")
+                        st.plotly_chart(px.bar(counts_time, x='Horário', y='Chegadas', text='Chegadas'), use_container_width=True)
+                    except: pass
                 
                 st.dataframe(df.drop(columns=['_is_paying', 'id'], errors='ignore'), use_container_width=True, hide_index=True)
             else: st.info("Sem dados.")
