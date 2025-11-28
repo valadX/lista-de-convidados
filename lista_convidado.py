@@ -7,6 +7,7 @@ import os
 import plotly.express as px
 import pytz
 import time
+import re  # Importando biblioteca para achar números no texto
 
 # ==========================================
 # CONFIGURAÇÃO INICIAL
@@ -32,12 +33,10 @@ except ImportError:
 # ==========================================
 
 def get_brazil_time():
-    """Retorna data/hora atual de SP"""
     return datetime.now(pytz.timezone('America/Sao_Paulo'))
 
 @st.cache_resource
 def download_logo():
-    """Baixa o logo apenas uma vez (Cache)"""
     if not os.path.exists(LOGO_PATH):
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
@@ -46,19 +45,11 @@ def download_logo():
                 with open(LOGO_PATH, "wb") as f: f.write(response.content)
         except: pass
 
-# Estilo Visual (Cartões Coloridos + Fundo Unificado + Inputs Legíveis)
+# CSS
 st.markdown("""
     <style>
-    /* Fundo Principal */
     .stApp { background-color: #2e003e; color: white; }
     
-    /* Barra Lateral na mesma cor */
-    section[data-testid="stSidebar"] { 
-        background-color: #2e003e; 
-        border-right: 1px solid rgba(255,255,255,0.1);
-    }
-    
-    /* Inputs: Fundo Branco e Texto Preto para Leitura Perfeita */
     input, .stNumberInput input { 
         color: #000000 !important; 
         font-weight: bold; 
@@ -71,15 +62,10 @@ st.markdown("""
         border-radius: 8px;
     }
 
-    /* Cartões de Métricas (Estilo Original Colorido) */
     .metric-card {
-        padding: 15px;
-        border-radius: 12px;
-        text-align: center;
-        box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
-        margin-bottom: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-        color: white;
+        padding: 15px; border-radius: 12px; text-align: center;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.3); margin-bottom: 10px;
+        border: 1px solid rgba(255,255,255,0.1); color: white;
     }
     .card-purple { background: linear-gradient(135deg, #6a1b9a, #4a148c); }
     .card-green { background: linear-gradient(135deg, #43a047, #2e7d32); }
@@ -88,19 +74,14 @@ st.markdown("""
     .big-number { font-size: 2.8em; font-weight: bold; margin: 0; text-shadow: 1px 1px 3px rgba(0,0,0,0.5); }
     .label { font-size: 0.9em; font-weight: 500; text-transform: uppercase; opacity: 0.9; }
     
-    /* Botões */
     div.stButton > button { 
-        width: 100%; 
-        border-radius: 8px; 
-        height: 3em; 
-        font-weight: bold; 
-        border: none;
+        width: 100%; border-radius: 8px; height: 3em; font-weight: bold; border: none;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONEXÃO E DADOS (BACKEND)
+# 2. CONEXÃO E DADOS
 # ==========================================
 
 def get_db_connection():
@@ -191,7 +172,60 @@ def delete_row(guest_id):
     return False
 
 # ==========================================
-# 3. PDF
+# 3. LÓGICA INTELIGENTE (SMART PARSER)
+# ==========================================
+
+def parse_input_text(text):
+    """Lê o texto e decide se é Adulto, Criança ou Cortesia"""
+    text = text.strip()
+    lower_text = text.lower()
+    
+    # 1. Verifica Palavras-Chave de Cortesia
+    keywords_cortesia = ['mãe', 'pai', 'mae', 'irmao', 'irmão', 'irmã', 'irma', 'fotografo', 'fotógrafo', 'staff', 'baba', 'babá', 'avó', 'avô', 'cortesia']
+    
+    # Verifica se alguma palavra inteira bate (evita pegar 'maercio' como 'mae')
+    for kw in keywords_cortesia:
+        if kw in lower_text:
+            return {
+                "Nome": text.title(),
+                "Tipo": "Cortesia",
+                "Idade": "-",
+                "Status": "Cortesia",
+                "_is_paying": False
+            }
+
+    # 2. Verifica se tem NÚMERO (Idade de Criança)
+    # Procura número no texto (ex: "Helena 6", "6 anos", "Joao 10")
+    match = re.search(r'(\d+)', text)
+    if match:
+        age = int(match.group(1))
+        # Remove o número do nome para ficar bonito
+        clean_name = re.sub(r'\d+\s*(anos|ano)?', '', text, flags=re.IGNORECASE).strip()
+        if not clean_name: clean_name = "Criança"
+        
+        # Regra: <= 7 isento, > 7 pagante
+        status = "Isento" if age <= 7 else "Pagante"
+        is_paying = (age > 7)
+        
+        return {
+            "Nome": clean_name.title(),
+            "Tipo": "Criança",
+            "Idade": f"{age} anos",
+            "Status": status,
+            "_is_paying": is_paying
+        }
+
+    # 3. Padrão: Adulto Pagante
+    return {
+        "Nome": text.title(),
+        "Tipo": "Adulto",
+        "Idade": "-",
+        "Status": "Pagante",
+        "_is_paying": True
+    }
+
+# ==========================================
+# 4. PDF
 # ==========================================
 @st.cache_data(show_spinner=False)
 def generate_pdf(party_name, guests_df, p_counts, guest_limit):
@@ -213,7 +247,6 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 10, txt=f"Gerado em: {now_str}", ln=True)
     pdf.ln(20)
     
-    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
@@ -226,7 +259,6 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 8, f"Cortesias: {p_counts['cortesia']}", ln=True)
     pdf.ln(10)
     
-    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -251,76 +283,66 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     except: return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# 4. LÓGICA DE APLICAÇÃO
+# 5. LÓGICA DE APLICAÇÃO
 # ==========================================
 
 download_logo()
 if HAS_GSHEETS: check_and_init_headers()
 
-# Init Session
 defaults = {'active': False, 'name': '', 'limit': 100, 'guests': [], 'last_time': None}
 for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
 def sync_data():
-    """Sincroniza tudo"""
     if st.session_state.active and HAS_GSHEETS:
         with st.spinner("Sincronizando..."):
             guests, limit = load_data_from_sheets(st.session_state.name)
             st.session_state.guests = guests
             st.session_state.limit = limit
 
-def handle_add_guest():
-    name = st.session_state.temp_name
-    gtype = st.session_state.temp_type
-    age = st.session_state.get('temp_age', 0)
-    
-    if not name: return st.warning("Nome vazio!")
-    if gtype == "Criança" and age == 0: return st.warning("Idade vazia!")
+def handle_add_guest_smart():
+    raw_text = st.session_state.smart_input
+    if not raw_text: return st.warning("Digite algo!")
 
+    # Usa o parser inteligente
+    parsed = parse_input_text(raw_text)
+    
     # Anti-duplicação
     if st.session_state.guests and st.session_state.last_time:
         last = st.session_state.guests[0]
-        if last['Nome'] == name and (datetime.now() - st.session_state.last_time).total_seconds() < 5:
+        if last['Nome'] == parsed['Nome'] and (datetime.now() - st.session_state.last_time).total_seconds() < 5:
             return st.toast("⚠️ Duplicado evitado!")
-
-    # Regras
-    is_paying = True
-    status = "Pagante"
-    age_str = "-"
-    
-    if gtype == "Criança":
-        age_str = f"{int(age)} anos"
-        if age <= 7: is_paying, status = False, "Isento"
-    elif gtype == "Cortesia":
-        is_paying, status, age_str = False, "Cortesia", "-"
 
     new_guest = {
         "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
-        "Nome": name, "Tipo": gtype, "Idade": age_str, "Status": status,
-        "Hora": get_brazil_time().strftime("%H:%M"), "Data": get_brazil_time().strftime("%d/%m/%Y"),
-        "Evento": st.session_state.name, "_is_paying": is_paying
+        "Nome": parsed['Nome'], 
+        "Tipo": parsed['Tipo'], 
+        "Idade": parsed['Idade'], 
+        "Status": parsed['Status'],
+        "Hora": get_brazil_time().strftime("%H:%M"), 
+        "Data": get_brazil_time().strftime("%d/%m/%Y"),
+        "Evento": st.session_state.name, 
+        "_is_paying": parsed['_is_paying']
     }
     
     if HAS_GSHEETS: save_row(new_guest)
     st.session_state.guests.insert(0, new_guest)
     st.session_state.last_time = datetime.now()
-    st.session_state.temp_name = ""
-    st.success(f"✅ {name} Adicionado!")
+    st.session_state.smart_input = "" # Limpa o campo
+    
+    # Feedback visual do que aconteceu
+    st.toast(f"✅ {parsed['Nome']} ({parsed['Status']})")
 
 # ==========================================
-# 5. INTERFACE
+# 6. INTERFACE
 # ==========================================
 
-# --- BARRA LATERAL (MENU) ---
 with st.sidebar:
     status_color = "🟢" if get_db_connection() else "🔴"
     st.caption(f"{status_color} Conexão: {'Online' if '🟢' in status_color else 'Offline'}")
 
     if not st.session_state.active:
         st.header("🎉 Iniciar / Entrar")
-        
-        # Buscar Festas
         if st.button("🔄 Buscar Festas Hoje"): st.rerun()
         active = get_active_parties_today()
         
@@ -332,19 +354,16 @@ with st.sidebar:
                 sync_data()
                 st.rerun()
         else:
-            st.info("Nenhuma festa ativa encontrada.")
+            st.info("Nenhuma festa encontrada.")
             
         st.markdown("---")
-        st.markdown("**Nova Festa:**")
         new_name = st.text_input("Nome do Evento", placeholder="Ex: Maria 15 Anos")
-        # ALTERAÇÃO: Campo de limite livre (min=0, sem max, step=1)
         new_limit = st.number_input("Limite Contrato", min_value=0, value=100, step=1)
         
         if st.button("🚀 Criar Nova"):
             if not new_name: st.error("Nome obrigatório!")
             elif not get_db_connection(): st.error("Sem conexão!")
             else:
-                # Marco Inicial
                 marker = {
                     "id": "SYSTEM", "Nome": "--- START ---", "Tipo": "System",
                     "Idade": str(new_limit), "Status": "SYSTEM_START",
@@ -358,10 +377,7 @@ with st.sidebar:
                 st.session_state.guests = []
                 st.rerun()
     else:
-        # Menu Festa Ativa
         st.header(f"🎈 {st.session_state.name}")
-        
-        # Exportação (Livre)
         st.markdown("### 📂 Relatórios")
         df = pd.DataFrame(st.session_state.guests)
         
@@ -373,15 +389,12 @@ with st.sidebar:
             c_counts['free'] = df[df['_is_paying'] == False].shape[0] - c_counts['cortesia']
             
             cols_drop = ['_is_paying', 'id']
-            # Passa Dataframe limpo para PDF
             pdf_data = generate_pdf(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore'), c_counts, st.session_state.limit)
             
             st.download_button("📄 Baixar PDF", pdf_data, "Relatorio.pdf", "application/pdf", use_container_width=True)
-            
             msg = f"Relatório {st.session_state.name}: {c_counts['paying']} Pagantes. Total: {c_counts['total']}/{st.session_state.limit}"
             st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
-        else:
-            st.info("Sem dados.")
+        else: st.info("Sem dados.")
 
         st.divider()
         if st.button("🔄 Sincronizar"): sync_data()
@@ -404,13 +417,11 @@ with st.sidebar:
             for k in ['active', 'name', 'guests']: st.session_state[k] = defaults[k]
             st.rerun()
 
-# --- ÁREA PRINCIPAL ---
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
     if os.path.exists(LOGO_PATH): st.image(LOGO_PATH, use_container_width=True)
 
 if st.session_state.active:
-    # Recalcula contagens para exibir no placar
     df = pd.DataFrame(st.session_state.guests)
     counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0}
     if not df.empty:
@@ -421,10 +432,8 @@ if st.session_state.active:
 
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.name}</h2>", unsafe_allow_html=True)
     
-    # Tratamento para divisão por zero
     limit_val = st.session_state.limit if st.session_state.limit > 0 else 1
     pct = min(counts['total'] / limit_val, 1.0)
-    
     st.write(f"**Lotação:** {counts['total']} / {st.session_state.limit}")
     st.progress(pct)
     if counts['total'] >= st.session_state.limit: st.error("⚠️ LIMITE ATINGIDO!")
@@ -435,34 +444,30 @@ if st.session_state.active:
     c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Cortesias</div><div class='big-number'>{counts['cortesia']}</div></div>", unsafe_allow_html=True)
     st.write("")
 
-    tab1, tab2 = st.tabs(["📍 Registro", "📊 Gráficos (Admin)"])
+    tab1, tab2 = st.tabs(["📍 Registro Inteligente", "📊 Gráficos (Admin)"])
     
     with tab1:
         with st.container(border=True):
-            st.subheader("Novo Convidado")
-            st.text_input("Nome", key="temp_name")
+            st.subheader("Digite Nome ou Comando")
+            st.info("Exemplos: 'Carlos' (Adulto), 'Helena 6' (Criança 6 anos), 'Maria Mãe' (Cortesia)")
             
-            col_type, col_age = st.columns([2, 1])
-            with col_type: 
-                st.radio("Tipo", ["Adulto", "Criança", "Cortesia"], horizontal=True, key="temp_type")
-            with col_age:
-                if st.session_state.temp_type == "Criança":
-                    st.number_input("Idade", 0, 18, 1, key="temp_age")
+            # CAMPO DE ENTRADA ÚNICO E INTELIGENTE
+            # on_change dispara assim que aperta Enter
+            st.text_input("", placeholder="Digite aqui...", key="smart_input", on_change=handle_add_guest_smart)
             
-            btn_col, undo_col = st.columns([3, 1])
-            with btn_col:
-                st.button("➕ CONFIRMAR", type="primary", on_click=handle_add_guest)
-            with undo_col:
-                if st.session_state.guests:
-                    if st.button("↩️ Desfazer"):
-                        last = st.session_state.guests.pop(0)
-                        if HAS_GSHEETS: delete_row(last['id'])
-                        st.rerun()
+            # Botão extra caso prefira clicar
+            if st.button("Confirmar", type="primary"):
+                handle_add_guest_smart()
             
-            # ÁREA NOVA: ÚLTIMOS 5 REGISTROS
+            st.write("")
             if st.session_state.guests:
+                if st.button("↩️ Desfazer Último"):
+                    last = st.session_state.guests.pop(0)
+                    if HAS_GSHEETS: delete_row(last['id'])
+                    st.rerun()
+                
                 st.markdown("---")
-                st.caption("📝 Últimos 5 Adicionados:")
+                st.caption("📝 Últimos adicionados:")
                 recent_df = pd.DataFrame(st.session_state.guests[:5])
                 st.dataframe(
                     recent_df[['Nome', 'Tipo', 'Status', 'Hora']], 
@@ -474,12 +479,9 @@ if st.session_state.active:
         pwd = st.text_input("Senha Admin", type="password", key="report_pass")
         if pwd == SENHA_ADMIN:
             if not df.empty:
-                # Gráfico
                 if 'Hora' in df.columns:
                     try:
-                        # Correção para garantir string antes de cortar
-                        df['HoraStr'] = df['Hora'].astype(str).apply(lambda x: x[:5])
-                        df['dt'] = pd.to_datetime(df['HoraStr'], format='%H:%M').apply(lambda x: x.replace(year=2024))
+                        df['dt'] = pd.to_datetime(df['Hora'], format='%H:%M').apply(lambda x: x.replace(year=2024))
                         df['15min'] = df['dt'].dt.floor('15T')
                         counts_time = df['15min'].value_counts().sort_index().reset_index()
                         counts_time.columns = ['Horário', 'Chegadas']
