@@ -249,6 +249,7 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 10, txt=f"Gerado em: {now_str}", ln=True)
     pdf.ln(20)
     
+    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
@@ -261,6 +262,7 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 8, f"Cortesias: {p_counts['cortesia']}", ln=True)
     pdf.ln(10)
     
+    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -390,7 +392,6 @@ with st.sidebar:
             pdf_data = generate_pdf(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore'), c_counts, st.session_state.limit)
             
             st.download_button("📄 Baixar PDF", pdf_data, "Relatorio.pdf", "application/pdf", use_container_width=True)
-            
             msg = f"Relatório {st.session_state.name}: {c_counts['paying']} Pagantes. Total: {c_counts['total']}/{st.session_state.limit}"
             st.link_button("📱 Enviar Zap", f"https://api.whatsapp.com/send?text={msg}", use_container_width=True)
         else: st.info("Sem dados.")
@@ -432,41 +433,46 @@ if st.session_state.active:
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.name}</h2>", unsafe_allow_html=True)
     
     limit_val = st.session_state.limit if st.session_state.limit > 0 else 1
-    pct = min(counts['total'] / limit_val, 1.0)
-    st.write(f"**Lotação:** {counts['total']} / {st.session_state.limit}")
+    pct = min(counts['paying'] / limit_val, 1.0)
+    
+    st.write(f"**Contrato (Pagantes):** {counts['paying']} / {st.session_state.limit}")
     st.progress(pct)
-    if counts['total'] >= st.session_state.limit: st.error("⚠️ LIMITE ATINGIDO!")
+    
+    if counts['paying'] >= st.session_state.limit: 
+        st.error("⚠️ LIMITE DO CONTRATO ATINGIDO!")
 
     c1, c2, c3 = st.columns(3)
     c1.markdown(f"<div class='metric-card card-purple'><div class='label'>Pagantes</div><div class='big-number'>{counts['paying']}</div></div>", unsafe_allow_html=True)
     c2.markdown(f"<div class='metric-card card-green'><div class='label'>Isentos (≤7)</div><div class='big-number'>{counts['free']}</div></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Cortesias</div><div class='big-number'>{counts['cortesia']}</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Total na Casa</div><div class='big-number'>{counts['total']}</div></div>", unsafe_allow_html=True)
     st.write("")
 
-    # --- CAMPO INTELIGENTE ---
-    with st.container(border=True):
-        st.subheader("Digite Nome ou Comando")
-        st.caption("Ex: 'Carlos' (Adulto), 'Helena 6' (Criança 6), 'Maria Mãe' (Cortesia)")
-        
-        # CAMPO DE ENTRADA ÚNICO
-        st.text_input("", placeholder="Digite aqui e aperte Enter...", key="smart_input", on_change=handle_add_guest_smart)
-        
-        st.write("")
-        if st.session_state.guests:
-            if st.button("↩️ Desfazer Último"):
-                last = st.session_state.guests.pop(0)
-                if HAS_GSHEETS: delete_row(last['id'])
-                st.rerun()
+    tab1, tab2 = st.tabs(["📍 Registro Inteligente", "📊 Gráficos (Admin)"])
+    
+    with tab1:
+        with st.container(border=True):
+            st.subheader("Digite Nome ou Comando")
+            st.caption("Ex: 'Carlos' (Adulto), 'Helena 6' (Criança 6), 'Maria Mãe' (Cortesia)")
             
-            st.markdown("---")
-            st.write("📝 **Últimos 5 Registros:**")
-            recent_df = pd.DataFrame(st.session_state.guests[:5])
-            if not recent_df.empty:
-                st.dataframe(
-                    recent_df[['Nome', 'Tipo', 'Idade', 'Status', 'Hora']], 
-                    use_container_width=True, 
-                    hide_index=True
-                )
+            # CAMPO DE ENTRADA ÚNICO
+            st.text_input("", placeholder="Digite aqui e aperte Enter...", key="smart_input", on_change=handle_add_guest_smart)
+            
+            st.write("")
+            if st.session_state.guests:
+                if st.button("↩️ Desfazer Último"):
+                    last = st.session_state.guests.pop(0)
+                    if HAS_GSHEETS: delete_row(last['id'])
+                    st.rerun()
+                
+                st.markdown("---")
+                st.write("📝 **Últimos 5 Registros:**")
+                recent_df = pd.DataFrame(st.session_state.guests[:5])
+                if not recent_df.empty:
+                    st.dataframe(
+                        recent_df[['Nome', 'Tipo', 'Idade', 'Status', 'Hora']], 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
 
     with st.expander("🛠️ Opções Manuais (Caso a inteligência erre)"):
         st.text_input("Nome Manual", key="temp_name")
