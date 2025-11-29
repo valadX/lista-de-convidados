@@ -8,6 +8,7 @@ import plotly.express as px
 import pytz
 import time
 import re
+import concurrent.futures # Para rodar em segundo plano
 
 # ==========================================
 # CONFIGURAÇÃO INICIAL
@@ -45,6 +46,11 @@ def download_logo():
                 with open(LOGO_PATH, "wb") as f: f.write(response.content)
         except: pass
 
+@st.cache_resource
+def get_thread_executor():
+    """Cria um executor para salvar em segundo plano sem travar a tela"""
+    return concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
 st.markdown("""
     <style>
     .stApp { background-color: #2e003e; color: white; }
@@ -78,32 +84,38 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONEXÃO E DADOS
+# 2. CONEXÃO OTIMIZADA (CACHEADA)
 # ==========================================
 
-def get_db_connection():
+@st.cache_resource(ttl=3600) # Mantém a conexão viva por 1 hora
+def get_cached_sheet_object():
+    """Conecta no Google APENAS UMA VEZ e guarda na memória"""
     if not HAS_GSHEETS: return None
+    
     creds_dict = None
     if "gcp_service_account" in st.secrets: creds_dict = dict(st.secrets["gcp_service_account"])
     elif "gsheets" in st.secrets: creds_dict = dict(st.secrets["gsheets"])
     if not creds_dict: return None
+
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
-        return client.open(SHEET_NAME).sheet1
+        sheet = client.open(SHEET_NAME).sheet1
+        return sheet
     except Exception: return None
 
 def check_and_init_headers():
-    sheet = get_db_connection()
+    sheet = get_cached_sheet_object()
     if not sheet: return
     try:
+        # Verifica se está vazio
         if not sheet.row_values(1):
             sheet.append_row(["id", "Nome", "Tipo", "Idade", "Status", "Hora", "Data", "Evento"])
     except: pass
 
 def get_active_parties_today():
-    sheet = get_db_connection()
+    sheet = get_cached_sheet_object()
     if not sheet: return []
     try:
         data = sheet.get_all_records()
@@ -112,7 +124,7 @@ def get_active_parties_today():
     except: return []
 
 def load_data_from_sheets(target_event):
-    sheet = get_db_connection()
+    sheet = get_cached_sheet_object()
     if not sheet: return [], 100
     try:
         data = sheet.get_all_records()
@@ -145,20 +157,27 @@ def load_data_from_sheets(target_event):
         return cleaned[::-1], limit
     except: return [], 100
 
-def save_row(row_data):
-    sheet = get_db_connection()
-    if not sheet: return False
+# FUNÇÃO DE SALVAMENTO ASSÍNCRONA
+def _save_row_bg(row_data):
+    """Função interna que roda na thread separada"""
+    sheet = get_cached_sheet_object()
+    if not sheet: return
     try:
         sheet.append_row([
             str(row_data.get('id')), row_data.get('Nome'), row_data.get('Tipo'),
             str(row_data.get('Idade')), row_data.get('Status'), row_data.get('Hora'),
             row_data.get('Data'), row_data.get('Evento')
         ])
-        return True
-    except: return False
+    except: pass
+
+def save_row(row_data):
+    """Dispara o salvamento e libera a tela IMEDIATAMENTE"""
+    executor = get_thread_executor()
+    executor.submit(_save_row_bg, row_data)
+    return True # Retorna True imediatamente, confiando na thread
 
 def delete_row(guest_id):
-    sheet = get_db_connection()
+    sheet = get_cached_sheet_object()
     if not sheet: return False
     try:
         cell = sheet.find(str(guest_id))
@@ -169,62 +188,30 @@ def delete_row(guest_id):
     return False
 
 # ==========================================
-# 3. SMART PARSER (LÓGICA INTELIGENTE)
+# 3. SMART PARSER
 # ==========================================
 
 def parse_input_text(text):
-    """
-    Interpreta o texto digitado:
-    - Se tem número: Criança (idade)
-    - Se tem 'mãe', 'pai', etc: Cortesia
-    - Padrão: Adulto
-    """
     text = text.strip()
     if not text: return None
-    
-    # Normaliza para busca
     lower_text = text.lower()
     
-    # 1. Palavras-Chave de Cortesia (Verifica palavra exata para evitar 'Ismael' virar 'Mae')
     keywords = ['mãe', 'mae', 'pai', 'irmao', 'irmão', 'irma', 'irmã', 'fotografo', 'fotógrafo', 'staff', 'baba', 'babá', 'avó', 'avô', 'cortesia']
     words = lower_text.replace(',', ' ').replace('-', ' ').split()
     
     if any(k in words for k in keywords):
-        return {
-            "Nome": text.title(),
-            "Tipo": "Cortesia",
-            "Idade": "-",
-            "Status": "Cortesia",
-            "_is_paying": False
-        }
+        return {"Nome": text.title(), "Tipo": "Cortesia", "Idade": "-", "Status": "Cortesia", "_is_paying": False}
 
-    # 2. Verifica Número (Idade)
     match = re.search(r'(\d+)', text)
     if match:
         age = int(match.group(1))
-        # Remove o número do nome para limpar
         clean_name = re.sub(r'\d+\s*(anos|ano|a)?', '', text, flags=re.IGNORECASE).strip()
         if not clean_name: clean_name = "Criança"
-        
         status = "Isento" if age <= 7 else "Pagante"
         is_paying = (age > 7)
-        
-        return {
-            "Nome": clean_name.title(),
-            "Tipo": "Criança",
-            "Idade": f"{age} anos",
-            "Status": status,
-            "_is_paying": is_paying
-        }
+        return {"Nome": clean_name.title(), "Tipo": "Criança", "Idade": f"{age} anos", "Status": status, "_is_paying": is_paying}
 
-    # 3. Padrão: Adulto
-    return {
-        "Nome": text.title(),
-        "Tipo": "Adulto",
-        "Idade": "-",
-        "Status": "Pagante",
-        "_is_paying": True
-    }
+    return {"Nome": text.title(), "Tipo": "Adulto", "Idade": "-", "Status": "Pagante", "_is_paying": True}
 
 # ==========================================
 # 4. PDF
@@ -249,7 +236,6 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 10, txt=f"Gerado em: {now_str}", ln=True)
     pdf.ln(20)
     
-    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
@@ -262,7 +248,6 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 8, f"Cortesias: {p_counts['cortesia']}", ln=True)
     pdf.ln(10)
     
-    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -277,7 +262,6 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
         try:
             vals = [str(row.get(c,'-')).encode('latin-1', 'replace').decode('latin-1') for c in ['Nome', 'Tipo', 'Idade', 'Status', 'Hora']]
         except: vals = ["-"] * 5
-        
         pdf.cell(80, 8, vals[0], 1, 0, 'L', fill); pdf.cell(30, 8, vals[1], 1, 0, 'C', fill)
         pdf.cell(30, 8, vals[2], 1, 0, 'C', fill); pdf.cell(30, 8, vals[3], 1, 0, 'C', fill)
         pdf.cell(20, 8, vals[4], 1, 1, 'C', fill)
@@ -311,10 +295,10 @@ def handle_add_guest_smart():
     parsed = parse_input_text(raw_text)
     if not parsed: return
 
-    # Anti-duplicação (5s)
+    # Anti-duplicação (3s é suficiente para evitar duplo clique)
     if st.session_state.guests and st.session_state.last_time:
         last = st.session_state.guests[0]
-        if last['Nome'] == parsed['Nome'] and (datetime.now() - st.session_state.last_time).total_seconds() < 5:
+        if last['Nome'] == parsed['Nome'] and (datetime.now() - st.session_state.last_time).total_seconds() < 3:
             st.toast(f"⚠️ {parsed['Nome']} duplicado evitado!")
             st.session_state.smart_input = ""
             return
@@ -327,18 +311,22 @@ def handle_add_guest_smart():
         "Evento": st.session_state.name, "_is_paying": parsed['_is_paying']
     }
     
-    if HAS_GSHEETS: save_row(new_guest)
+    # 1. ATUALIZA A TELA IMEDIATAMENTE (MUITO RÁPIDO)
     st.session_state.guests.insert(0, new_guest)
     st.session_state.last_time = datetime.now()
     st.session_state.smart_input = "" 
-    st.toast(f"✅ {parsed['Nome']} ({parsed['Tipo']}) adicionado!")
+    st.toast(f"✅ {parsed['Nome']} ({parsed['Tipo']})")
+    
+    # 2. MANDA PARA A NUVEM EM SEGUNDO PLANO (SEM TRAVAR)
+    if HAS_GSHEETS: 
+        save_row(new_guest) # Agora roda em thread
 
 # ==========================================
 # 6. INTERFACE
 # ==========================================
 
 with st.sidebar:
-    status_color = "🟢" if get_db_connection() else "🔴"
+    status_color = "🟢" if get_cached_sheet_object() else "🔴"
     st.caption(f"{status_color} Conexão: {'Online' if '🟢' in status_color else 'Offline'}")
 
     if not st.session_state.active:
@@ -362,7 +350,7 @@ with st.sidebar:
         
         if st.button("🚀 Criar Nova"):
             if not new_name: st.error("Nome obrigatório!")
-            elif not get_db_connection(): st.error("Sem conexão!")
+            elif not get_cached_sheet_object(): st.error("Sem conexão!")
             else:
                 marker = {
                     "id": "SYSTEM", "Nome": "--- START ---", "Tipo": "System",
@@ -434,12 +422,9 @@ if st.session_state.active:
     
     limit_val = st.session_state.limit if st.session_state.limit > 0 else 1
     pct = min(counts['paying'] / limit_val, 1.0)
-    
     st.write(f"**Contrato (Pagantes):** {counts['paying']} / {st.session_state.limit}")
     st.progress(pct)
-    
-    if counts['paying'] >= st.session_state.limit: 
-        st.error("⚠️ LIMITE DO CONTRATO ATINGIDO!")
+    if counts['paying'] >= st.session_state.limit: st.error("⚠️ LIMITE ATINGIDO!")
 
     c1, c2, c3 = st.columns(3)
     c1.markdown(f"<div class='metric-card card-purple'><div class='label'>Pagantes</div><div class='big-number'>{counts['paying']}</div></div>", unsafe_allow_html=True)
@@ -454,7 +439,6 @@ if st.session_state.active:
             st.subheader("Digite Nome ou Comando")
             st.caption("Ex: 'Carlos' (Adulto), 'Helena 6' (Criança 6), 'Maria Mãe' (Cortesia)")
             
-            # CAMPO DE ENTRADA ÚNICO
             st.text_input("", placeholder="Digite aqui e aperte Enter...", key="smart_input", on_change=handle_add_guest_smart)
             
             st.write("")
