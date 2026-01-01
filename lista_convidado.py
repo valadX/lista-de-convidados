@@ -245,7 +245,6 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 8, f"Total Presente: {p_counts['total']}", ln=True)
     pdf.ln(2)
     pdf.cell(0, 8, f"Pagantes: {p_counts['paying']}", ln=True)
-    pdf.cell(0, 8, f"Crianças Totais: {p_counts['children_total']}", ln=True)
     pdf.cell(0, 8, f"Isentos (<=7): {p_counts['free']}", ln=True)
     pdf.cell(0, 8, f"Cortesias: {p_counts['cortesia']}", ln=True)
     pdf.ln(10)
