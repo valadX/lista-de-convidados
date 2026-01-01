@@ -236,6 +236,7 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 10, txt=f"Gerado em: {now_str}", ln=True)
     pdf.ln(20)
     
+    # Resumo
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", 'B', 12); pdf.cell(0, 10, "  Resumo", ln=True, fill=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", size=12); pdf.ln(2)
@@ -244,10 +245,12 @@ def generate_pdf(party_name, guests_df, p_counts, guest_limit):
     pdf.cell(0, 8, f"Total Presente: {p_counts['total']}", ln=True)
     pdf.ln(2)
     pdf.cell(0, 8, f"Pagantes: {p_counts['paying']}", ln=True)
+    pdf.cell(0, 8, f"Crianças Totais: {p_counts['children_total']}", ln=True)
     pdf.cell(0, 8, f"Isentos (<=7): {p_counts['free']}", ln=True)
     pdf.cell(0, 8, f"Cortesias: {p_counts['cortesia']}", ln=True)
     pdf.ln(10)
     
+    # Tabela
     pdf.set_font("Helvetica", 'B', 10)
     pdf.set_fill_color(106, 27, 154); pdf.set_text_color(255, 255, 255)
     pdf.cell(80, 8, "Nome", 1, 0, 'L', 1); pdf.cell(30, 8, "Tipo", 1, 0, 'C', 1)
@@ -369,12 +372,13 @@ with st.sidebar:
         st.markdown("### 📂 Relatórios")
         df = pd.DataFrame(st.session_state.guests)
         
-        c_counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0}
+        c_counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0, 'children_total': 0}
         if not df.empty:
             c_counts['total'] = len(df)
             c_counts['paying'] = df[df['_is_paying'] == True].shape[0]
             c_counts['cortesia'] = df[df['Tipo'] == 'Cortesia'].shape[0]
             c_counts['free'] = df[df['_is_paying'] == False].shape[0] - c_counts['cortesia']
+            c_counts['children_total'] = df[df['Tipo'] == 'Criança'].shape[0]
             
             cols_drop = ['_is_paying', 'id']
             pdf_data = generate_pdf(st.session_state.name, df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore'), c_counts, st.session_state.limit)
@@ -411,12 +415,13 @@ with c2:
 
 if st.session_state.active:
     df = pd.DataFrame(st.session_state.guests)
-    counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0}
+    counts = {'total': 0, 'paying': 0, 'free': 0, 'cortesia': 0, 'children_total': 0}
     if not df.empty:
         counts['total'] = len(df)
         counts['paying'] = df[df['_is_paying'] == True].shape[0]
         counts['cortesia'] = df[df['Tipo'] == 'Cortesia'].shape[0]
         counts['free'] = df[df['_is_paying'] == False].shape[0] - counts['cortesia']
+        counts['children_total'] = df[df['Tipo'] == 'Criança'].shape[0]
 
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.name}</h2>", unsafe_allow_html=True)
     
@@ -428,8 +433,8 @@ if st.session_state.active:
 
     c1, c2, c3 = st.columns(3)
     c1.markdown(f"<div class='metric-card card-purple'><div class='label'>Pagantes</div><div class='big-number'>{counts['paying']}</div></div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='metric-card card-green'><div class='label'>Isentos (≤7)</div><div class='big-number'>{counts['free']}</div></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Total na Casa</div><div class='big-number'>{counts['total']}</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='metric-card card-green'><div class='label'>Crianças Totais</div><div class='big-number'>{counts['children_total']}</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Total de Pessoas</div><div class='big-number'>{counts['total']}</div></div>", unsafe_allow_html=True)
     st.write("")
 
     tab1, tab2 = st.tabs(["📍 Registro Inteligente", "📊 Gráficos (Admin)"])
