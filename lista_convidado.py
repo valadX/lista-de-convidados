@@ -12,7 +12,7 @@ import concurrent.futures # Para rodar em segundo plano
 
 # ==========================================
 # CONFIGURAÇÃO INICIAL
-# ==========================================
+# =======================a===================
 st.set_page_config(page_title="Controle de Buffet", page_icon="🟣", layout="wide")
 
 # Configurações Globais
@@ -424,20 +424,20 @@ if st.session_state.active:
 
     st.markdown(f"<h2 style='text-align: center;'>{st.session_state.name}</h2>", unsafe_allow_html=True)
     
-    # CORREÇÃO: Lotação baseada no TOTAL (Heads) vs Limite
+    # CORREÇÃO: Lotação baseada apenas em PAGANTES vs Limite
     limit_val = st.session_state.limit if st.session_state.limit > 0 else 1
-    pct = min(counts['total'] / limit_val, 1.0)
+    pct = min(counts['paying'] / limit_val, 1.0)
     
-    st.write(f"**Lotação (Total de Pessoas):** {counts['total']} / {st.session_state.limit}")
+    st.write(f"**Lotação (Apenas Pagantes):** {counts['paying']} / {st.session_state.limit}")
     st.progress(pct)
     
-    if counts['total'] >= st.session_state.limit: 
-        st.error("⚠️ LIMITE DE LOTAÇÃO ATINGIDO!")
+    if counts['paying'] >= st.session_state.limit: 
+        st.error("⚠️ LIMITE DE LOTAÇÃO (PAGANTES) ATINGIDO!")
 
     c1, c2, c3 = st.columns(3)
     c1.markdown(f"<div class='metric-card card-purple'><div class='label'>Pagantes</div><div class='big-number'>{counts['paying']}</div></div>", unsafe_allow_html=True)
     c2.markdown(f"<div class='metric-card card-green'><div class='label'>Crianças Totais</div><div class='big-number'>{counts['children_total']}</div></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Total</div><div class='big-number'>{counts['total']}</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card card-orange'><div class='label'>Total (Inc. Staff/Cortesia)</div><div class='big-number'>{counts['total']}</div></div>", unsafe_allow_html=True)
     st.write("")
 
     tab1, tab2 = st.tabs(["📍 Registro Inteligente", "📊 Gráficos (Admin)"])
